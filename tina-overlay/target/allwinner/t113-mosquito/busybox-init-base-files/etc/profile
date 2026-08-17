@@ -1,0 +1,10 @@
+#!/bin/sh
+
+[ -f /etc/banner ] && cat /etc/banner
+
+export PATH="%PATH%"
+export HOME=/root
+export PS1='root@mosquito:\w# '
+
+grep -q debugfs /proc/filesystems && mount -t debugfs none /sys/kernel/debug 2>/dev/null
+[ -x /bin/ll ] || alias ll='ls -al'

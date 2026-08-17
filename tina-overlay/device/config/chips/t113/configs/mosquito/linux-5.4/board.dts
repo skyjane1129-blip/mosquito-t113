@@ -1,0 +1,297 @@
+/*
+ * T113-S3 Mosquito custom board - first-stage TF boot configuration.
+ *
+ * Hardware source: Netlist_PCB1_2026-07-29.tel
+ * Enabled for board diagnostics: TF/SDC0, UART0 console, TWI0, Air780EG
+ * UART1 and the two T113 USB ports.
+ */
+
+/dts-v1/;
+
+#define SUN8IW20P1_NO_OPTEE
+#include "sun8iw20p1.dtsi"
+
+/ {
+	model = "Mosquito T113-S3 custom board";
+	compatible = "mosquito,t113-s3", "allwinner,sun8iw20p1";
+
+	reg_vdd_cpu: vdd-cpu {
+		compatible = "regulator-fixed";
+		regulator-name = "vdd_cpu_fixed_0v95";
+		regulator-min-microvolt = <950000>;
+		regulator-max-microvolt = <950000>;
+		regulator-always-on;
+		regulator-boot-on;
+	};
+};
+
+&{/chosen} {
+	stdout-path = "serial0:115200n8";
+};
+
+&cpu0 {
+	enable-method = "allwinner,sun8iw20p1";
+	/delete-property/ cpu-idle-states;
+	cpu-supply = <&reg_vdd_cpu>;
+};
+
+&cpu1 {
+	enable-method = "allwinner,sun8iw20p1";
+	/delete-property/ cpu-idle-states;
+	cpu-supply = <&reg_vdd_cpu>;
+};
+
+&{/cpus} {
+	/delete-node/ idle-states;
+};
+
+&pio {
+	uart0_pe_pins: uart0-pe-pins {
+		pins = "PE2", "PE3";
+		function = "uart0";
+		drive-strength = <10>;
+		bias-pull-up;
+	};
+
+	uart0_pe_sleep_pins: uart0-pe-sleep-pins {
+		pins = "PE2", "PE3";
+		function = "gpio_in";
+	};
+
+	/* Air780EG MAIN_UART: PG6 TX, PG7 RX, PG8 RTS, PG9 CTS. */
+	uart1_pg_pins: uart1-pg-pins {
+		pins = "PG6", "PG7", "PG8", "PG9";
+		function = "uart1";
+		drive-strength = <10>;
+		bias-pull-up;
+	};
+
+	uart1_pg_sleep_pins: uart1-pg-sleep-pins {
+		pins = "PG6", "PG7", "PG8", "PG9";
+		function = "gpio_in";
+	};
+
+	sdc0_pins_a: sdc0@0 {
+		pins = "PF0", "PF1", "PF2", "PF3", "PF4", "PF5";
+		function = "sdc0";
+		drive-strength = <30>;
+		bias-pull-up;
+		power-source = <3300>;
+	};
+
+	sdc0_pins_b: sdc0@1 {
+		pins = "PF0", "PF1", "PF2", "PF3", "PF4", "PF5";
+		function = "sdc0";
+		drive-strength = <30>;
+		bias-pull-up;
+		power-source = <1800>;
+	};
+
+	sdc0_pins_c: sdc0@2 {
+		pins = "PF0", "PF1", "PF2", "PF3", "PF4", "PF5";
+		function = "gpio_in";
+	};
+
+	/* Kept for references in the vendor controller node; unused on Mosquito. */
+	sdc0_pins_d: sdc0@3 {
+		pins = "PF2", "PF4";
+		function = "uart0";
+		drive-strength = <10>;
+		bias-pull-up;
+	};
+
+	sdc0_pins_e: sdc0@4 {
+		pins = "PF0", "PF1", "PF3", "PF5";
+		function = "jtag";
+		drive-strength = <10>;
+		bias-pull-up;
+	};
+
+	sdc1_pins_a: sdc1@0 {
+		pins = "PG0", "PG1", "PG2", "PG3", "PG4", "PG5";
+		function = "sdc1";
+		drive-strength = <30>;
+		bias-pull-up;
+	};
+
+	sdc1_pins_b: sdc1@1 {
+		pins = "PG0", "PG1", "PG2", "PG3", "PG4", "PG5";
+		function = "gpio_in";
+	};
+
+	sdc2_pins_a: sdc2@0 {
+		pins = "PC2", "PC3", "PC4", "PC5", "PC6", "PC7";
+		function = "sdc2";
+		drive-strength = <30>;
+		bias-pull-up;
+	};
+
+	sdc2_pins_b: sdc2@1 {
+		pins = "PC2", "PC3", "PC4", "PC5", "PC6", "PC7";
+		function = "gpio_in";
+	};
+
+	/* TWI0 is wired to DHT30, BQ25895 and EA3056 on the PCB. */
+	twi0_pins_a: twi0@0 {
+		pins = "PB2", "PB3";
+		function = "twi0";
+		drive-strength = <10>;
+	};
+
+	twi0_pins_b: twi0@1 {
+		pins = "PB2", "PB3";
+		function = "gpio_in";
+	};
+};
+
+&uart0 {
+	pinctrl-names = "default", "sleep";
+	pinctrl-0 = <&uart0_pe_pins>;
+	pinctrl-1 = <&uart0_pe_sleep_pins>;
+	status = "okay";
+};
+
+&uart1 {
+	pinctrl-names = "default", "sleep";
+	pinctrl-0 = <&uart1_pg_pins>;
+	pinctrl-1 = <&uart1_pg_sleep_pins>;
+	status = "okay";
+};
+&uart2 { status = "disabled"; };
+&uart3 { status = "disabled"; };
+&uart4 { status = "disabled"; };
+&uart5 { status = "disabled"; };
+
+&sdc0 {
+	pinctrl-names = "default", "sleep";
+	pinctrl-0 = <&sdc0_pins_a>;
+	pinctrl-1 = <&sdc0_pins_c>;
+	bus-width = <4>;
+	/*
+	 * SDC0 is the system/boot TF card.  Do not gate rootfs discovery on
+	 * the socket's mechanical CD contact: the current PCB reports PF6
+	 * deasserted even while Boot0 and U-Boot are reading the inserted card.
+	 */
+	non-removable;
+	cap-sd-highspeed;
+	no-sdio;
+	no-mmc;
+	max-frequency = <50000000>;
+	status = "okay";
+};
+
+&sdc1 { status = "disabled"; };
+&sdc2 { status = "disabled"; };
+
+&twi0 {
+	/* Start conservatively while identifying every device on the bus. */
+	clock-frequency = <100000>;
+	pinctrl-names = "default", "sleep";
+	pinctrl-0 = <&twi0_pins_a>;
+	pinctrl-1 = <&twi0_pins_b>;
+	status = "okay";
+};
+&twi1 { status = "disabled"; };
+&twi2 { status = "disabled"; };
+&twi3 { status = "disabled"; };
+&spi0 { status = "disabled"; };
+&spi1 { status = "disabled"; };
+&gmac0 { status = "disabled"; };
+&s_cir0 { status = "disabled"; };
+&ir1 { status = "disabled"; };
+&ledc { status = "disabled"; };
+
+/* Keep the first image headless and avoid probing unconnected multimedia IO. */
+&ve { status = "disabled"; };
+&di { status = "disabled"; };
+&g2d { status = "disabled"; };
+&disp { status = "disabled"; };
+&lcd0 { status = "disabled"; };
+&tv0 { status = "disabled"; };
+&hdmi { status = "disabled"; };
+&tvd { status = "disabled"; };
+&tvd0 { status = "disabled"; };
+
+&codec { status = "disabled"; };
+&dummy_cpudai { status = "disabled"; };
+&sndcodec { status = "disabled"; };
+&sunxi_rpaf_dsp0 { status = "disabled"; };
+&dmic { status = "disabled"; };
+&dmic_codec { status = "disabled"; };
+&sounddmic { status = "disabled"; };
+&daudio0 { status = "disabled"; };
+&sounddaudio0 { status = "disabled"; };
+&daudio1 { status = "disabled"; };
+&sounddaudio1 { status = "disabled"; };
+&daudio2 { status = "disabled"; };
+&sounddaudio2 { status = "disabled"; };
+&hdmiaudio { status = "disabled"; };
+&spdif { status = "disabled"; };
+&soundspdif { status = "disabled"; };
+
+/*
+ * TYPE_C1 has fixed 5.1 kOhm Rd resistors and is wired as a USB device/sink.
+ * The PCB has no SoC VBUS/ID detect GPIO, so use fixed device mode.
+ */
+&usbc0 {
+	device_type = "usbc0";
+	usb_port_type = <0>;
+	usb_detect_type = <0>;
+	usb_wakeup_suspend = <0>;
+	usb_serial_unique = <0>;
+	usb_serial_number = "mosquito-t113";
+	status = "okay";
+};
+&udc { status = "okay"; };
+&ehci0 { status = "disabled"; };
+&ohci0 { status = "disabled"; };
+
+/* CN2 is USB1 host.  Its 5 V boost enable (PE0/CAM_EN) is controlled by
+ * mosquito-board-test so it always starts in a safe, known state. */
+&usbc1 {
+	device_type = "usbc1";
+	usb_port_type = <1>;
+	usb_detect_type = <0>;
+	usb_regulator_io = "nocare";
+	usb_wakeup_suspend = <0>;
+	status = "okay";
+};
+&ehci1 { status = "okay"; };
+&ohci1 { status = "okay"; };
+
+&pwm0 { status = "disabled"; };
+&pwm1 { status = "disabled"; };
+&pwm2 { status = "disabled"; };
+&pwm3 { status = "disabled"; };
+&pwm4 { status = "disabled"; };
+&pwm5 { status = "disabled"; };
+&pwm6 { status = "disabled"; };
+&pwm7 { status = "disabled"; };
+&gpadc { status = "disabled"; };
+&rtp { status = "disabled"; };
+
+&soc {
+	platform@45000004 {
+		reg = <0x0 0x45000004 0x0 0x0>;
+		eraseflag = <1>;
+		next_work = <3>;
+		debug_mode = <8>;
+	};
+
+	target@45000008 {
+		reg = <0x0 0x45000008 0x0 0x0>;
+		boot_clock = <720>;
+		storage_type = <1>;
+		burn_key = <0>;
+		dragonboard_test = <0>;
+	};
+
+	card0_boot_para@2 {
+		reg = <0x0 0x2 0x0 0x0>;
+		device_type = "card0_boot_para";
+		card_ctrl = <0>;
+		card_high_speed = <1>;
+		card_line = <4>;
+		pinctrl-0 = <&sdc0_pins_a>;
+	};
+};

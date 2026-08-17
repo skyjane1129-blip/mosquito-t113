@@ -1,0 +1,50 @@
+; T113-S3 Mosquito TF-card partition layout.
+; Sizes are expressed in 512-byte sectors.
+
+[mbr]
+size = 16384
+
+[partition_start]
+
+[partition]
+    name         = boot-resource
+    size         = 504
+    downloadfile = "boot-resource.fex"
+    user_type    = 0x8000
+
+[partition]
+    name         = env
+    size         = 504
+    downloadfile = "env.fex"
+    user_type    = 0x8000
+
+[partition]
+    name         = env-redund
+    size         = 504
+    downloadfile = "env.fex"
+    user_type    = 0x8000
+
+[partition]
+    name         = boot
+    size         = 16384
+    downloadfile = "boot.fex"
+    user_type    = 0x8000
+
+; Keep rootfs as partition 5: env.cfg uses /dev/mmcblk0p5.
+[partition]
+    name         = rootfs
+    size         = 124928
+    downloadfile = "rootfs.fex"
+    user_type    = 0x8000
+
+; Writable ext4 overlay, 64 MiB.
+[partition]
+    name         = rootfs_data
+    size         = 131072
+    user_type    = 0x8000
+
+; Allocate all remaining TF-card capacity to UDISK.
+[partition]
+    name         = UDISK
+    size         = 0
+    user_type    = 0x8000

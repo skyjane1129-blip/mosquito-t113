@@ -1,0 +1,43 @@
+#!/bin/sh
+
+GADGET=/sys/kernel/config/usb_gadget/g1
+FFS=/dev/usb-ffs/adb
+TMP_LOG=/tmp/mosquito-usb0-adb-stop.log
+PERSIST_DIR=/overlay/mosquito-test
+
+mkdir -p "$PERSIST_DIR"
+: > "$TMP_LOG"
+
+log()
+{
+	echo "$*"
+	echo "$*" >> "$TMP_LOG"
+}
+
+BOUND="$(cat "$GADGET/UDC" 2>/dev/null)"
+if [ -n "$BOUND" ]; then
+	if echo '' > "$GADGET/UDC"; then
+		log "[PASS] unbound ADB gadget from $BOUND"
+	else
+		log "[FAIL] could not unbind ADB gadget from $BOUND"
+	exit 1
+	fi
+else
+	log '[INFO] ADB gadget was not bound'
+fi
+
+/etc/init.d/adbd stop 2>/dev/null
+sleep 1
+if pidof adbd >/dev/null 2>&1; then
+	log '[WARN] adbd is still running'
+else
+	log '[PASS] adbd stopped'
+fi
+
+if grep -q " $FFS functionfs " /proc/mounts; then
+	umount "$FFS" 2>/dev/null && log '[PASS] ADB FunctionFS unmounted' || \
+		log '[WARN] FunctionFS is still mounted; it can be reused by the next start'
+fi
+
+log "Logs: $TMP_LOG and $PERSIST_DIR/usb0-adb-stop.log"
+cp "$TMP_LOG" "$PERSIST_DIR/usb0-adb-stop.log" 2>/dev/null

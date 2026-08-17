@@ -1,0 +1,26 @@
+# /etc/inittab
+#
+# Copyright (C) 2001 Erik Andersen <andersen@codepoet.org>
+#
+# Note: BusyBox init doesn't support runlevels.  The runlevels field is
+# completely ignored by BusyBox init. If you want runlevels, use
+# sysvinit.
+#
+# Format for each entry: <id>:<runlevels>:<action>:<process>
+#
+# id        == tty to run on, or empty for /dev/console
+# runlevels == ignored
+# action    == one of sysinit, respawn, askfirst, wait, and once
+# process   == program to run
+
+# /pseudo_init has already mounted proc, sysfs, devtmpfs and the writable
+# overlay before it execs BusyBox init.  /etc/preinit belongs to procd and is
+# intentionally not installed in this BusyBox-init target.
+null::sysinit:/bin/mount -o remount,rw /
+null::sysinit:/bin/mkdir -p /dev/pts
+null::sysinit:/bin/mount -a
+::sysinit:/etc/init.d/rcS boot
+
+/dev/console::respawn:-/bin/sh
+::ctrlaltdel:/sbin/reboot
+null::shutdown:/bin/umount -a -r

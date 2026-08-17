@@ -1,0 +1,6 @@
+DO NOT FLASH THIS IMAGE
+
+dev-v1 is a known-bad development image. Its early-boot ADB/USB0 UDC
+auto-bind causes the tested T113 board to reboot repeatedly at about 3 seconds.
+
+Use dev-v2 instead. For emergency recovery, use the 2026-08-14 boot-ok baseline.

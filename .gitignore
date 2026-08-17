@@ -1,0 +1,20 @@
+# Local Codex/agent state
+/.agents/
+/.codex/
+
+# Tina SDK is vendor-provided, about 17 GB, and contains nested Git projects.
+/tina-t113/
+
+# Build outputs and binaries
+/apps/hello-t113/hello-t113
+/releases/**/*.img
+*.o
+*.a
+*.so
+*.log
+
+# Desktop/editor noise
+.DS_Store
+Thumbs.db
+*~
+*.swp

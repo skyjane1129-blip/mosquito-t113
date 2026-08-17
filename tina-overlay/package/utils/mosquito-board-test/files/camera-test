@@ -1,0 +1,158 @@
+#!/bin/sh
+
+TMP_LOG=/tmp/mosquito-camera-test.log
+PERSIST_DIR=/overlay/mosquito-test
+CAPTURE_DIR=/mnt/UDISK/mosquito-test/camera
+SEQUENCE_FILE=$CAPTURE_DIR/.next-photo-number
+GPIO_OFFSET=128
+CAM_GPIO=
+
+mkdir -p "$PERSIST_DIR"
+: > "$TMP_LOG"
+
+log()
+{
+	echo "$*"
+	echo "$*" >> "$TMP_LOG"
+}
+
+finish()
+{
+	if [ -n "$CAM_GPIO" ] && [ -e "/sys/class/gpio/gpio$CAM_GPIO/direction" ]; then
+		echo low > "/sys/class/gpio/gpio$CAM_GPIO/direction" 2>/dev/null
+	fi
+	cp "$TMP_LOG" "$PERSIST_DIR/camera-test.log" 2>/dev/null
+}
+trap finish 0
+trap 'exit 129' 1
+trap 'exit 130' 2
+trap 'exit 143' 15
+
+log 'Mosquito T113-S3 one-command high-resolution camera capture'
+log 'Policy: enable PE0/CAM_EN, capture one 3264x2448 MJPEG frame, sync it, then remove camera power.'
+
+BASE=
+BEST_NGPIO=0
+for CHIP in /sys/class/gpio/gpiochip*; do
+	[ -e "$CHIP/base" ] || continue
+	N="$(cat "$CHIP/ngpio" 2>/dev/null)"
+	case "$N" in ''|*[!0-9]*) continue ;; esac
+	if [ "$N" -gt "$BEST_NGPIO" ]; then
+		BEST_NGPIO="$N"
+		BASE="$(cat "$CHIP/base" 2>/dev/null)"
+	fi
+done
+if [ -z "$BASE" ]; then
+	log '[FAIL] cannot locate the main GPIO controller'
+	exit 1
+fi
+CAM_GPIO=$((BASE + GPIO_OFFSET))
+[ -e "/sys/class/gpio/gpio$CAM_GPIO" ] || echo "$CAM_GPIO" > /sys/class/gpio/export 2>/dev/null
+sleep 1
+if ! echo high > "/sys/class/gpio/gpio$CAM_GPIO/direction" 2>/dev/null; then
+	log '[FAIL] cannot assert PE0/CAM_EN'
+	exit 1
+fi
+log '[PASS] PE0/CAM_EN asserted; camera VBUS should be about 5 V'
+
+VIDEO=
+WAIT=0
+while [ "$WAIT" -lt 10 ]; do
+	for CANDIDATE in /dev/video*; do
+		[ -e "$CANDIDATE" ] || continue
+		FORMATS="$(v4l2-ctl -d "$CANDIDATE" --list-formats-ext 2>/dev/null)"
+		if echo "$FORMATS" | grep -q "'MJPG'" && \
+		   echo "$FORMATS" | grep -q '3264x2448'; then
+			VIDEO="$CANDIDATE"
+			break
+		fi
+	done
+	[ -n "$VIDEO" ] && break
+	sleep 1
+	WAIT=$((WAIT + 1))
+done
+
+log '[INFO] USB topology:'
+lsusb >> "$TMP_LOG" 2>&1
+lsusb
+if [ -z "$VIDEO" ]; then
+	log '[FAIL] no /dev/video* appeared; check camera cable orientation, PE0 power, USB1 DP/DM and dmesg'
+	exit 1
+fi
+log "[PASS] UVC video node appeared: $VIDEO"
+log '[INFO] Camera capabilities:'
+v4l2-ctl -d "$VIDEO" --all >> "$TMP_LOG" 2>&1
+v4l2-ctl -d "$VIDEO" --list-formats-ext >> "$TMP_LOG" 2>&1
+
+if ! grep -q ' /mnt/UDISK ' /proc/mounts; then
+	log '[FAIL] /mnt/UDISK is not mounted; refusing to lose the captured photo after reboot'
+	exit 1
+fi
+mkdir -p "$CAPTURE_DIR"
+
+set_optional_control()
+{
+	CONTROL="$1"
+	VALUE="$2"
+	if v4l2-ctl -d "$VIDEO" --set-ctrl="$CONTROL=$VALUE" >> "$TMP_LOG" 2>&1; then
+		log "[PASS] camera control $CONTROL=$VALUE"
+	else
+		log "[WARN] camera did not accept optional control $CONTROL=$VALUE"
+	fi
+}
+
+set_optional_control exposure_auto 3
+set_optional_control exposure_auto_priority 0
+set_optional_control white_balance_temperature_auto 1
+set_optional_control focus_auto 1
+set_optional_control power_line_frequency 1
+
+if ! v4l2-ctl -d "$VIDEO" \
+	--set-fmt-video='width=3264,height=2448,pixelformat=MJPG' >> "$TMP_LOG" 2>&1; then
+	log '[FAIL] camera rejected 3264x2448 MJPEG mode'
+	exit 1
+fi
+
+ACTIVE_FORMAT="$(v4l2-ctl -d "$VIDEO" --get-fmt-video 2>> "$TMP_LOG")"
+echo "$ACTIVE_FORMAT" >> "$TMP_LOG"
+if ! echo "$ACTIVE_FORMAT" | grep -q '3264/2448'; then
+	log '[FAIL] camera did not retain 3264x2448 capture mode'
+	exit 1
+fi
+log '[PASS] camera configured for 3264x2448 MJPEG'
+log '[INFO] keep the subject at least 10 cm from the lens; autofocus, auto exposure and auto white balance are enabled.'
+
+SEQ=1
+if [ -r "$SEQUENCE_FILE" ]; then
+	SEQ="$(sed -n '1p' "$SEQUENCE_FILE" 2>/dev/null)"
+fi
+case "$SEQ" in
+	''|*[!0-9]*) SEQ=1 ;;
+esac
+while [ "$SEQ" -le 999999 ]; do
+	NAME="$(printf 'photo-hd-flash-%06d.jpg' "$SEQ")"
+	OUT="$CAPTURE_DIR/$NAME"
+	[ -e "$OUT" ] || break
+	SEQ=$((SEQ + 1))
+done
+if [ "$SEQ" -gt 999999 ]; then
+	log '[FAIL] photo sequence is exhausted'
+	exit 1
+fi
+
+rm -f "$OUT"
+log '[INFO] warming up for 120 frames so autofocus can settle; camera firmware should illuminate the onboard flash automatically.'
+if ! v4l2-ctl -d "$VIDEO" \
+	--stream-mmap=3 --stream-skip=120 --stream-count=1 \
+	--stream-to="$OUT" >> "$TMP_LOG" 2>&1 || [ ! -s "$OUT" ]; then
+	rm -f "$OUT"
+	log '[FAIL] high-resolution MJPEG capture failed'
+	exit 1
+fi
+
+BYTES="$(ls -ln "$OUT" 2>/dev/null | awk '{print $5}')"
+echo $((SEQ + 1)) > "$SEQUENCE_FILE"
+sync
+log "[PASS] captured 3264x2448 MJPEG frame with automatic flash: $OUT (${BYTES:-0} bytes)"
+log '[PASS] photo data synchronized to the TF card; camera power will now turn off.'
+log "Logs: $TMP_LOG and $PERSIST_DIR/camera-test.log"

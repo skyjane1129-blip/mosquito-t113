@@ -1,0 +1,54 @@
+/* T113-S3 Mosquito: TF/SDC0 boot and UART0 bring-up configuration. */
+
+&platform {
+	eraseflag = <1>;
+	next_work = <3>;
+	debug_mode = <1>;
+};
+
+&target {
+	boot_clock = <720>;
+	storage_type = <1>;
+	burn_key = <0>;
+	dragonboard_test = <0>;
+};
+
+&sdc0_pins_a {
+	allwinner,pins = "PF0", "PF1", "PF2", "PF3", "PF4", "PF5";
+	allwinner,function = "sdc0";
+	allwinner,muxsel = <2>;
+	allwinner,drive = <3>;
+	allwinner,pull = <1>;
+	pins = "PF0", "PF1", "PF2", "PF3", "PF4", "PF5";
+	function = "sdc0";
+	drive-strength = <30>;
+	bias-pull-up;
+	power-source = <3300>;
+};
+
+&sdc0_pins_b {
+	pins = "PF0", "PF1", "PF2", "PF3", "PF4", "PF5";
+	function = "sdc0";
+	drive-strength = <30>;
+	bias-pull-up;
+	power-source = <3300>;
+};
+
+&sdc0_pins_c {
+	pins = "PF0", "PF1", "PF2", "PF3", "PF4", "PF5";
+	function = "gpio_in";
+};
+
+&card0_boot_para {
+	device_type = "card0_boot_para";
+	card_ctrl = <0>;
+	card_high_speed = <1>;
+	card_line = <4>;
+	pinctrl-0 = <&sdc0_pins_a>;
+};
+
+&nand0 { status = "disabled"; };
+&spi0 { status = "disabled"; };
+&disp { status = "disabled"; };
+&lcd0 { lcd_used = <0>; };
+&hdmi { hdmi_used = <0>; };

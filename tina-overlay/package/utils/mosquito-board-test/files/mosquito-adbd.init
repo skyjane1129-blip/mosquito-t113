@@ -1,0 +1,24 @@
+#!/bin/sh /etc/rc.common
+
+# Intentionally no START/STOP values: dev-v2 must never start ADB from rcS.
+USE_PROCD=1
+
+GADGET=/sys/kernel/config/usb_gadget/g1
+FFS=/dev/usb-ffs/adb
+
+start_service()
+{
+	grep -q " $FFS functionfs " /proc/mounts || return 1
+	procd_open_instance
+	procd_set_param command /bin/adbd
+	procd_set_param env ADB_AUTH_ENABLE=0
+	procd_set_param respawn 5 5 0
+	procd_set_param oom_score_adj -17
+	procd_close_instance
+}
+
+stop_service()
+{
+	BOUND="$(cat "$GADGET/UDC" 2>/dev/null)"
+	[ -n "$BOUND" ] && echo '' > "$GADGET/UDC" 2>/dev/null
+}

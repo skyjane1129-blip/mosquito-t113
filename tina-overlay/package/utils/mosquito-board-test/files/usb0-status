@@ -1,0 +1,60 @@
+#!/bin/sh
+
+TMP_LOG=/tmp/mosquito-usb0-status.log
+PERSIST_DIR=/overlay/mosquito-test
+GADGET=/sys/kernel/config/usb_gadget/g1
+
+mkdir -p "$PERSIST_DIR"
+: > "$TMP_LOG"
+
+log()
+{
+	echo "$*"
+	echo "$*" >> "$TMP_LOG"
+}
+
+log 'Mosquito T113-S3 USB0/ADB status (dev-v2 manual mode)'
+log 'USB0 is device-only; UART0 remains available as the recovery console.'
+
+AUTO_LINK="$(find /etc/rc.d -maxdepth 1 -type l -name 'S*adbd' 2>/dev/null | sed -n '1p')"
+if [ -z "$AUTO_LINK" ] && ! grep -qx 'adbd' /etc/init.d/load_script.conf 2>/dev/null; then
+	log '[PASS] early-boot ADB is disabled'
+else
+	log "[WARN] an ADB auto-start entry still exists: ${AUTO_LINK:-load_script.conf}"
+fi
+
+if pidof adbd >/dev/null 2>&1; then
+	log '[PASS] adbd process is running as root without authentication'
+else
+	log '[INFO] adbd is stopped; run: usb0-adb-start prepare'
+fi
+
+if grep -q ' /dev/usb-ffs/adb functionfs ' /proc/mounts; then
+	log '[PASS] ADB FunctionFS is mounted'
+else
+	log '[INFO] ADB FunctionFS is not prepared yet'
+fi
+
+if [ -e "$GADGET/UDC" ]; then
+	BOUND="$(cat "$GADGET/UDC" 2>/dev/null)"
+	[ -n "$BOUND" ] && log "[PASS] gadget bound to UDC: $BOUND" || log '[INFO] gadget is prepared but not bound'
+else
+	log '[INFO] ADB configfs gadget is not prepared yet'
+fi
+
+UDC="$(ls /sys/class/udc 2>/dev/null | sed -n '1p')"
+if [ -n "$UDC" ]; then
+	STATE="$(cat "/sys/class/udc/$UDC/state" 2>/dev/null)"
+	log "[INFO] UDC state: ${STATE:-unknown}"
+	case "$STATE" in
+	configured) log '[PASS] PC configured USB0; adb devices should list MOSQUITO-T113-DEV' ;;
+	attached|powered|default|addressed) log '[WARN] PC sees the link but ADB enumeration is not complete' ;;
+	not\ attached) log '[WARN] no physical USB data attachment; check a known-good data cable, Type-C CC1/CC2 and DP/DM' ;;
+	*) log '[WARN] unexpected UDC state; inspect dmesg and the Type-C data path' ;;
+	esac
+else
+	log '[FAIL] no UDC exists under /sys/class/udc'
+fi
+
+log "Logs: $TMP_LOG and $PERSIST_DIR/usb0-status.log"
+cp "$TMP_LOG" "$PERSIST_DIR/usb0-status.log" 2>/dev/null
