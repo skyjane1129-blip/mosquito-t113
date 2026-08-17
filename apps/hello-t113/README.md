@@ -2,6 +2,16 @@
 
 用于验证 Mosquito T113-S3 的最小交叉编译和串口传输流程。
 
+推荐在仓库根目录执行：
+
+```sh
+./scripts/build-hello.sh /路径/tina-t113
+```
+
+程序会输出到 `apps/hello-t113/build/hello-t113`，并自动显示文件类型和 MD5。
+
+以下是手动编译方式。
+
 在已将 Tina 工具链加入 `PATH` 的 Ubuntu 终端中运行：
 
 ```sh

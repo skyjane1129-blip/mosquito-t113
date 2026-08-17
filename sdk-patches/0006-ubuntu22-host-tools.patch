@@ -1,0 +1,25 @@
+diff --git a/mklibs/Makefile b/mklibs/Makefile
+index 906e994..184f96a 100644
+--- a/mklibs/Makefile
++++ b/mklibs/Makefile
+@@ -18,6 +18,7 @@ HOST_FIXUP:=autoreconf
+ include $(BUILD_DIR)/host-build.mk
+ 
+ HOST_CFLAGS += -I$(CURDIR)/include
++HOST_CONFIGURE_VARS += CXX="g++" CXXFLAGS="$(HOST_CFLAGS) -std=gnu++11"
+ 
+ define Host/Install
+        $(INSTALL_BIN) \
+diff --git a/squashfskit4/Makefile b/squashfskit4/Makefile
+index 92286a4..b67ff87 100644
+--- a/squashfskit4/Makefile
++++ b/squashfskit4/Makefile
+@@ -26,7 +26,7 @@ define Host/Compile
+ 		XATTR_SUPPORT=1 \
+ 		LZMA_LIB="$(STAGING_DIR_HOST)/lib/liblzma.a" \
+ 		LZ4_LIB="$(STAGING_DIR_HOST)/lib/liblz4.a" \
+-		EXTRA_CFLAGS="-I$(STAGING_DIR_HOST)/include" \
++		EXTRA_CFLAGS="-I$(STAGING_DIR_HOST)/include -fcommon" \
+ 		mksquashfs unsquashfs
+ endef
+ 

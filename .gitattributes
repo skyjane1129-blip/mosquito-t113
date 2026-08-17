@@ -1,3 +1,7 @@
 *.pdf binary
 *.tel binary
 *.img binary
+*.sh text eol=lf
+*.patch text eol=lf
+*.patch whitespace=-blank-at-eol,-blank-at-eof,-space-before-tab
+*.env text eol=lf

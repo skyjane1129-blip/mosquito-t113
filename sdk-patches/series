@@ -1,0 +1,7 @@
+# SDK subproject|patch file|purpose
+lichee/brandy-2.0/spl|sdk-patches/0001-spl-build-support.patch|SPL secure-library build support
+lichee/brandy-2.0/u-boot-2018|sdk-patches/0002-uboot-sun8iw20-clock.patch|T113/Sun8iW20 clock driver
+lichee/linux-5.4|sdk-patches/0003-linux-sun8iw20-smp.patch|T113-S3 CPU1 boot without OP-TEE
+package|sdk-patches/0004-package-build-and-adb.patch|package fixes and manual root ADB
+scripts|sdk-patches/0005-pack-hook-shell-fix.patch|portable post-pack shell logic
+tools|sdk-patches/0006-ubuntu22-host-tools.patch|Ubuntu 22.04 host-tool compatibility

@@ -1,0 +1,191 @@
+diff --git a/libs/nspr/Makefile b/libs/nspr/Makefile
+index 43c5fd81..beaef992 100644
+--- a/libs/nspr/Makefile
++++ b/libs/nspr/Makefile
+@@ -7,7 +7,7 @@
+ include $(TOPDIR)/rules.mk
+ 
+ PKG_NAME:=nspr
+-PKG_VERSION:=4.12
++PKG_VERSION:=4.27
+ PKG_RELEASE:=1
+ PKG_MAINTAINER:=Lucian Cristian <lucian.cristian@gmail.com>
+ PKG_LICENCE:=MPL-2.0
+@@ -16,14 +16,13 @@ PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
+ PKG_SOURCE_URL:= \
+     https://download.cdn.mozilla.net/pub/$(PKG_NAME)/releases/v$(PKG_VERSION)/src/ \
+     https://archive.mozilla.org/pub/$(PKG_NAME)/releases/v$(PKG_VERSION)/src/
+-PKG_HASH:=15ea32c7b100217b6e3193bc03e77f485d9bf7504051443ba9ce86d1c17c6b5a
++PKG_HASH:=6d495192b6ab00a3c28db053492cf794329f7c0351a5728db198111a1816e89b
+ 
+ PKG_BUILD_PARALLEL:=1
+ PKG_INSTALL:=1
+ PKG_FIXUP:=autoreconf
+ 
+ include $(BUILD_DIR)/package.mk
+-include $(BUILD_DIR)/host-build.mk
+ 
+ CONFIGURE_PATH = ./nspr
+ MAKE_PATH = ./nspr
+@@ -35,7 +34,8 @@ ifeq ($(LBITS),64)
+ endif
+ 
+ export MUSL=$(if $(CONFIG_LIBC_USE_GLIBC),0,1)
+-TARGET_LDFLAGS += -Wl,--gc-sections,--as-needed
++TARGET_LDFLAGS += -Wl,--gc-sections,--as-needed $(FPIC)
++TARGET_CFLAGS += -flto
+ 
+ CONFIGURE_ARGS += \
+     --build=$(GNU_HOST_NAME) \
+@@ -46,19 +46,6 @@ CONFIGURE_ARGS += \
+     $(if $(CONFIG_IPV6),--enable-ipv6,--disable-ipv6) \
+     $(conf)
+ 
+-define Host/Configure
+-	$(call Host/Configure/Default,--enable-64bit , ,nspr)
+-endef
+-
+-define Host/Compile
+-	$(MAKE) -C $(PKG_BUILD_DIR)/nspr/config
+-	$(MAKE) -C $(HOST_BUILD_DIR)/nspr
+-endef
+-
+-define Host/Install
+-	$(MAKE) -C $(HOST_BUILD_DIR)/nspr install
+-endef
+-
+ define Build/Compile
+ 	CROSS_COMPILE=1 CFLAGS="-DXP_UNIX $(HOST_CFLAGS)" LDFLAGS="" CC="$(HOSTCC)" \
+ 	    $(MAKE) -C $(PKG_BUILD_DIR)/nspr/config
+@@ -98,4 +85,3 @@ define Package/nspr/install
+ endef
+ 
+ $(eval $(call BuildPackage,nspr))
+-$(eval $(call HostBuild))
+diff --git a/libs/nspr/patches/001-Makefile.in_rm_BUILD_STRING_and_BUILD_TIME.patch b/libs/nspr/patches/001-Makefile.in_rm_BUILD_STRING_and_BUILD_TIME.patch
+index 42528f29..184f89cf 100644
+--- a/libs/nspr/patches/001-Makefile.in_rm_BUILD_STRING_and_BUILD_TIME.patch
++++ b/libs/nspr/patches/001-Makefile.in_rm_BUILD_STRING_and_BUILD_TIME.patch
+@@ -22,11 +22,11 @@ Signed-off-by: Mingli Yu <Mingli.Yu@windriver.com>
+  pr/src/Makefile.in        | 8 +-------
+  4 files changed, 4 insertions(+), 28 deletions(-)
+ 
+-diff --git a/nspr/lib/ds/Makefile.in b/nspr/lib/ds/Makefile.in
++diff --git a/lib/ds/Makefile.in b/lib/ds/Makefile.in
+ index e737791..b578476 100644
+ --- a/nspr/lib/ds/Makefile.in
+ +++ b/nspr/lib/ds/Makefile.in
+-@@ -114,13 +114,7 @@ GARBAGE += $(TINC)
++@@ -110,13 +110,7 @@ GARBAGE += $(TINC)
+  
+  $(TINC):
+  	@$(MAKE_OBJDIR)
+@@ -41,11 +41,11 @@ index e737791..b578476 100644
+  
+  
+  $(OBJDIR)/plvrsion.$(OBJ_SUFFIX): plvrsion.c $(TINC)
+-diff --git a/nspr/lib/libc/src/Makefile.in b/nspr/lib/libc/src/Makefile.in
++diff --git a/lib/libc/src/Makefile.in b/lib/libc/src/Makefile.in
+ index e8a6d9f..978ed28 100644
+ --- a/nspr/lib/libc/src/Makefile.in
+ +++ b/nspr/lib/libc/src/Makefile.in
+-@@ -116,13 +116,7 @@ GARBAGE += $(TINC)
++@@ -112,13 +112,7 @@ GARBAGE += $(TINC)
+  
+  $(TINC):
+  	@$(MAKE_OBJDIR)
+@@ -60,11 +60,11 @@ index e8a6d9f..978ed28 100644
+  
+  
+  $(OBJDIR)/plvrsion.$(OBJ_SUFFIX): plvrsion.c $(TINC)
+-diff --git a/nspr/lib/prstreams/Makefile.in b/nspr/lib/prstreams/Makefile.in
++diff --git a/lib/prstreams/Makefile.in b/lib/prstreams/Makefile.in
+ index aeb2944..f318097 100644
+ --- a/nspr/lib/prstreams/Makefile.in
+ +++ b/nspr/lib/prstreams/Makefile.in
+-@@ -116,13 +116,7 @@ endif
++@@ -110,13 +110,7 @@ endif
+  
+  $(TINC):
+  	@$(MAKE_OBJDIR)
+@@ -79,11 +79,11 @@ index aeb2944..f318097 100644
+  
+  
+  $(OBJDIR)/plvrsion.$(OBJ_SUFFIX): plvrsion.c $(TINC)
+-diff --git a/nspr/pr/src/Makefile.in b/nspr/pr/src/Makefile.in
++diff --git a/pr/src/Makefile.in b/pr/src/Makefile.in
+ index 19c5a69..b4ac31c 100644
+ --- a/nspr/pr/src/Makefile.in
+ +++ b/nspr/pr/src/Makefile.in
+-@@ -326,13 +326,7 @@ GARBAGE += $(TINC)
++@@ -310,13 +310,7 @@ GARBAGE += $(TINC)
+  
+  $(TINC):
+  	@$(MAKE_OBJDIR)
+diff --git a/libs/toolchain/Makefile b/libs/toolchain/Makefile
+index 9109c912..fedd1e85 100644
+--- a/libs/toolchain/Makefile
++++ b/libs/toolchain/Makefile
+@@ -590,13 +590,8 @@ else
+ 		$(INSTALL_DIR) $(1)/$$$$dir ; \
+ 		$(CP) $(call qstrip,$(CONFIG_LIBC_ROOT_DIR))/$$$$file $(1)/$$$$dir/ ; \
+ 	done ; \
+-	exit 0
+-
+-    ifeq ($(CONFIG_USE_MUSL),y)
+-	echo "link ldd to $(LD_MUSL_NAME)"
+-	$(INSTALL_DIR) $(1)/usr/bin ;
+-	$(LN) ../../lib/$(LD_MUSL_NAME) $(1)/usr/bin/ldd;
+-    endif
++	$(INSTALL_DIR) $(1)/usr/bin;\
++	$(LN) ../../lib/$(LD_MUSL_NAME) $(1)/usr/bin/ldd;\
+ 	exit 0
+   endef
+ 
+@@ -619,10 +614,11 @@ else
+   endef
+ 
+   define Package/libatomic/install
++  $(info ===== $(CONFIG_LIBATOMIC_ROOT_DIR) =============)
+ 	for file in $(call qstrip,$(CONFIG_LIBATOMIC_FILE_SPEC)); do \
+ 		dir=`dirname $$$$file` ; \
+ 		$(INSTALL_DIR) $(1)/$$$$dir ; \
+-		$(CP) $(call qstrip,$(CONFIG_LIBATOMIC_ROOT_DIR))/$$$$file $(1)/$$$$dir/ ; \
++		$(CP) $(call qstrip,$(CONFIG_LIBPTHREAD_ROOT_DIR))/$$$$file $(1)/$$$$dir/ ; \
+ 	done ; \
+ 	exit 0
+   endef
+diff --git a/utils/adb/src/Tina.mk b/utils/adb/src/Tina.mk
+index bc8315ed..b9f5aa4e 100755
+--- a/utils/adb/src/Tina.mk
++++ b/utils/adb/src/Tina.mk
+@@ -119,6 +119,7 @@ LOCAL_SRC_FILES := \
+ 
+ LOCAL_CFLAGS := -O2 -g -DADB_HOST=0 -Wall -Wno-unused-parameter
+ LOCAL_CFLAGS += -D_XOPEN_SOURCE -D_GNU_SOURCE
++LOCAL_CFLAGS += -DALLOW_ADBD_ROOT=1 -DMOSQUITO_ADBD_ALWAYS_ROOT=1
+ 
+ ifneq (,$(filter userdebug eng,$(TARGET_BUILD_VARIANT)))
+ LOCAL_CFLAGS += -DALLOW_ADBD_ROOT=1
+diff --git a/utils/adb/src/adb.c b/utils/adb/src/adb.c
+index 73916c60..7282c253 100755
+--- a/utils/adb/src/adb.c
++++ b/utils/adb/src/adb.c
+@@ -1060,6 +1060,9 @@ void build_local_name(char* target_str, size_t target_size, int server_port)
+ 
+ #if !ADB_HOST
+ static int should_drop_privileges() {
++#ifdef MOSQUITO_ADBD_ALWAYS_ROOT
++    return 0;
++#else
+ #ifndef ALLOW_ADBD_ROOT
+     return 1;
+ #else /* ALLOW_ADBD_ROOT */
+@@ -1089,6 +1092,7 @@ static int should_drop_privileges() {
+     }
+     return secure;
+ #endif /* ALLOW_ADBD_ROOT */
++#endif /* MOSQUITO_ADBD_ALWAYS_ROOT */
+ }
+ #endif /* !ADB_HOST */
+ 
