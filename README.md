@@ -67,7 +67,29 @@ MobaXterm 中使用 `Shift + 鼠标右键` 打开菜单，板端运行 `sz` 时�
 arm-openwrt-linux-muslgnueabi-
 ```
 
-最小示例位于 [`apps/hello-t113`](apps/hello-t113/README.md)。
+最小示例位于 [`apps/hello-t113`](apps/hello-t113/README.md)。已有完整 SDK 时可以一条命令编译：
+
+```sh
+./scripts/build-hello.sh /路径/tina-t113
+```
+
+## 换电脑继续开发
+
+本仓库已经提供环境检查、SDK身份校验、覆盖层安装、应用编译、完整镜像编译和SDK迁移脚本。完整步骤见 [`DEVELOPMENT_SETUP.md`](DEVELOPMENT_SETUP.md)。
+
+推荐先在当前电脑执行：
+
+```sh
+./scripts/backup-sdk.sh ./tina-t113 /移动硬盘上的目录
+```
+
+然后在新电脑克隆本仓库、恢复 SDK，并运行：
+
+```sh
+./scripts/check-host.sh /路径/tina-t113
+./scripts/verify-sdk.sh /路径/tina-t113
+source scripts/setup-env.sh /路径/tina-t113
+```
 
 ## Tina SDK 覆盖层
 
@@ -78,7 +100,7 @@ arm-openwrt-linux-muslgnueabi-
 - `package/utils/mosquito-board-test`：板级诊断、摄像头和手动 USB0 ADB 工具
 - `lichee/.../sun8iw20p1_mosquito_defconfig`：Mosquito U-Boot 配置
 
-将 `tina-overlay/` 中的文件按原相对路径覆盖到已有 Tina T113 SDK 后，参考 [`MOSQUITO_BUILD.md`](tina-overlay/MOSQUITO_BUILD.md) 构建。
+恢复原始 SDK 时，使用 `scripts/install-overlay.sh` 安装 `tina-overlay/` 和 `sdk-patches/`；参考 [`MOSQUITO_BUILD.md`](tina-overlay/MOSQUITO_BUILD.md) 构建。
 
 ## 镜像
 

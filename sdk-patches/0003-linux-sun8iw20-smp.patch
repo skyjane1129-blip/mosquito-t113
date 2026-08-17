@@ -1,0 +1,64 @@
+diff --git a/arch/arm/mach-sunxi/platsmp.c b/arch/arm/mach-sunxi/platsmp.c
+index bdde9ef3a..4a0b759c1 100644
+--- a/arch/arm/mach-sunxi/platsmp.c
++++ b/arch/arm/mach-sunxi/platsmp.c
+@@ -194,3 +194,59 @@ static const struct smp_operations sun8i_smp_ops __initconst = {
+ 	.smp_boot_secondary	= sun8i_smp_boot_secondary,
+ };
+ CPU_METHOD_OF_DECLARE(sun8i_a23_smp, "allwinner,sun8i-a23", &sun8i_smp_ops);
++
++#define SUN8IW20_CPUCFG_BASE		0x09010000
++#define SUN8IW20_CPUCFG_SIZE		0x10
++#define SUN8IW20_CPU_BOOT_BASE		0x070005c4
++#define SUN8IW20_CPU_BOOT_SIZE		0x10
++
++static void __iomem *sun8iw20_cpucfg_membase;
++static void __iomem *sun8iw20_cpu_boot_membase;
++
++static void __init sun8iw20_smp_prepare_cpus(unsigned int max_cpus)
++{
++	sun8iw20_cpucfg_membase = ioremap(SUN8IW20_CPUCFG_BASE,
++					   SUN8IW20_CPUCFG_SIZE);
++	if (!sun8iw20_cpucfg_membase) {
++		pr_err("Couldn't map sun8iw20 CPU configuration registers\n");
++		return;
++	}
++
++	sun8iw20_cpu_boot_membase = ioremap(SUN8IW20_CPU_BOOT_BASE,
++					     SUN8IW20_CPU_BOOT_SIZE);
++	if (!sun8iw20_cpu_boot_membase)
++		pr_err("Couldn't map sun8iw20 CPU boot registers\n");
++}
++
++static int sun8iw20_smp_boot_secondary(unsigned int cpu,
++				       struct task_struct *idle)
++{
++	u32 reg;
++
++	if (cpu != 1)
++		return -EINVAL;
++
++	if (!(sun8iw20_cpucfg_membase && sun8iw20_cpu_boot_membase))
++		return -EFAULT;
++
++	spin_lock(&cpu_lock);
++
++	/* CPU boot address registers start at 0x070005c4, one word per CPU. */
++	writel(__pa_symbol(secondary_startup),
++	       sun8iw20_cpu_boot_membase + cpu * sizeof(u32));
++
++	/* Release CPU1 from reset through C0_RST_CTRL. */
++	reg = readl(sun8iw20_cpucfg_membase);
++	writel(reg | BIT(cpu), sun8iw20_cpucfg_membase);
++
++	spin_unlock(&cpu_lock);
++
++	return 0;
++}
++
++static const struct smp_operations sun8iw20_smp_ops __initconst = {
++	.smp_prepare_cpus	= sun8iw20_smp_prepare_cpus,
++	.smp_boot_secondary	= sun8iw20_smp_boot_secondary,
++};
++CPU_METHOD_OF_DECLARE(sun8iw20_smp, "allwinner,sun8iw20p1",
++		      &sun8iw20_smp_ops);

@@ -1,0 +1,32 @@
+diff --git a/drivers/Makefile b/drivers/Makefile
+index 4d0ba69..680d0d8 100644
+--- a/drivers/Makefile
++++ b/drivers/Makefile
+@@ -44,7 +44,7 @@ endif
+ LIBS-$(CFG_SUNXI_POWER) += drivers/power/libpower.o
+ LIBS-y += drivers/dram/libdram.o
+ 
+-#LIBS-y += drivers/secure/libsecure.o
++LIBS-y += drivers/secure/libsecure.o
+ LIBS-$(CFG_SUNXI_SBOOT) += sboot/openssl/libopenssl.o
+ 
+ 
+diff --git a/include/openssl/assert.h b/include/openssl/assert.h
+index 0b6874e..f27afae 100755
+--- a/include/openssl/assert.h
++++ b/include/openssl/assert.h
+@@ -1,13 +1 @@
+-// Copyright 2010 Google Inc. All Rights Reserved.
+-* SPDX-License-Identifier:	GPL-2.0+
+-// Use of this source code is governed by an Apache-style license that can be
+-// found in the COPYING file.
+-//
+-// Macros specific to the RLZ library.
+-
+-#ifndef RLZ_WIN_LIB_ASSERT_H_
+-#define RLZ_WIN_LIB_ASSERT_H_
+-
+-
+-
+-#endif  // RLZ_WIN_LIB_ASSERT_H_
++// Copyright 2010 Google Inc. All Rights Reserved.
