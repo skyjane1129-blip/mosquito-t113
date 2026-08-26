@@ -1,7 +1,7 @@
 /*
  * T113-S3 Mosquito custom board - first-stage TF boot configuration.
  *
- * Hardware source: Netlist_PCB1_2026-07-29.tel
+ * Hardware source: hardware/pcb/netlist/Netlist_PCB1_2026-07-29.tel
  * Enabled for board diagnostics: TF/SDC0, UART0 console, TWI0, Air780EG
  * UART1 and the two T113 USB ports.
  */

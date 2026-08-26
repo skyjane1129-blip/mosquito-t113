@@ -1,6 +1,6 @@
 # T113-S3 Mosquito TF 启动镜像
 
-本目标用于 `Netlist_PCB1_2026-07-29.tel` 对应的自研 PCB。当前目标已启用 TF/SDC0、UART0、USB1 Host、UVC/V4L2 摄像头、Air780EG LTE/GNSS、I2C 和板级测试工具。由于 SDK 自带的 OP-TEE 二进制无法通过该板 T113-S3 的硬件信息检查，本目标不打包 OP-TEE，由 Linux 直接启动第二个 Cortex-A7 核心。
+本目标用于 [`hardware/pcb/netlist/Netlist_PCB1_2026-07-29.tel`](../hardware/pcb/netlist/Netlist_PCB1_2026-07-29.tel) 对应的自研 PCB。当前目标已启用 TF/SDC0、UART0、USB1 Host、UVC/V4L2 摄像头、Air780EG LTE/GNSS、I2C 和板级测试工具。由于 SDK 自带的 OP-TEE 二进制无法通过该板 T113-S3 的硬件信息检查，本目标不打包 OP-TEE，由 Linux 直接启动第二个 Cortex-A7 核心。
 
 SDC0 是承载系统和根文件系统的启动 TF 卡。当前 PCB 的卡座检测触点在 Linux 中始终报告未插卡，因此设备树将 SDC0 标记为 `non-removable`，启动时直接枚举介质，不依赖 PF6 卡检测。此配置不支持系统运行期间的 TF 热插拔；若后续确认并修复 CD 硬件，可恢复 `cd-gpios`。
 
