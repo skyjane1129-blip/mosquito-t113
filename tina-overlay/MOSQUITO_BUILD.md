@@ -66,23 +66,41 @@ reboot
 ## 外设与开发命令
 
 ```sh
+camera-test0
 camera-test
+camera-test1
+camera-test1 500
 air-test
 gnss-test
+sim-test
+power-test
+4g-start
+photo-upload https://webhook.site/your-uuid
+4g-stop
 board-test
 which rz
 which sz
 ```
 
-`camera-test` 使用3264×2448 MJPEG、自动闪光和120帧自动对焦预热，照片保存到 `/mnt/UDISK/mosquito-test/camera/`。`rz/sz` 用于在UART串口上进行ZMODEM原始二进制传输。
+`camera-test0` 只检测摄像头固件声明的手动焦距范围和步长，不拍照。`camera-test` 使用3264×2448 MJPEG、自动闪光和120帧连续自动对焦预热，作为基准模式。`camera-test1` 无参数时用最近5个焦距读数的范围判稳，以纯 Shell 计算中位数，关闭自动对焦、写入并回读确认焦距，再跳过120帧拍摄；带整数参数时同样执行范围、步长和回读验证。任何空值、越界值或回读不一致都会在拍照前失败退出。照片先写入临时文件，校验 JPEG 起止标记后再原子改名到 `/mnt/UDISK/mosquito-test/camera/`，并生成同名 `.jpg.txt`；该文本包含摘要字段以及完整V4L2活动格式、控制表和设备信息。`sim-test` 只读检查 Air780EG 的 SIM 检测开关、当前接口、主卡槽在位状态、CPIN 和 ICCID；日志中的 ICCID 默认遮挡。`power-test` 触发 BQ25895 ADC 后报告电池电压、系统电压、VBUS、充电电流和故障状态。BQ25895 是充电管理芯片而不是电量计，因此该命令不能可靠给出剩余电量百分比。
 
-USB0 ADB不会开机自动启动。只有需要调试时才手动运行 `usb0-adb-start prepare` 和 `usb0-adb-start bind`，避免实板循环重启。
+摄像头命令完成数据同步后先关闭摄像头并等待USB断开日志输出完毕，随后单独输出 `PHOTO=`、`METADATA=` 和 `LOG=` 行，避免内核串口日志插入文件路径。
+
+`gnss-test` 打开 Air780EG GNSS 并等待定位，默认只报告定位耗时、定位模式、HDOP、卫星数和最大 C/N0，不打印精确经纬度；现场调试确需坐标时可运行 `MOSQUITO_GNSS_SHOW_COORDS=1 gnss-test`。GNSS、SIM/LTE 诊断和 PPP 共用 `/dev/ttyS1`，请先执行 `4g-stop`，确认 PPP 已停止后再运行这些诊断命令。
+
+`4g-start` 默认用中国联通 `3gnet` APN，自动加载 PPP 模块、创建 `/dev/ppp`、等待注册、建立 `ppp0`、安装 DNS 并尝试 NTP 校时；其他 APN 可作为第一个参数传入。该命令可幂等重复执行，并用锁避免诊断程序与 pppd 同时占用 UART。`photo-upload URL [JPEG]` 强制 HTTP/1.1，HTTPS 默认验证系统 CA、系统时间和内核随机池，再以原始 `image/jpeg` 请求体上传，并携带文件名和 SHA-256 请求头。`MOSQUITO_CURL_INSECURE=1` 只允许用于非敏感临时联调，正式验收不得使用。`rz/sz` 用于在UART串口上进行ZMODEM原始二进制传输。
+
+`air-test`、`sim-test` 和 `pppd` 会独占同一个 Air780EG UART，PPP 在线时不要同时运行这些诊断命令。拨号及上传日志分别位于 `/tmp/mosquito-4g-ppp.log` 和 `/overlay/mosquito-test/photo-upload.log`。
+
+dev-v5.6.2取消v5.5.x的USB0 ADB自动启动。系统正常进入UART0 Root Shell后只运行`adb-on`，命令会等待内核uptime和UDC就绪，随后准备FunctionFS、显式后台启动无认证root adbd并绑定USB0；30秒内依赖仍未就绪会明确失败。v5.6.1实板发现`/etc/init.d/adbd`内的`pidof adbd`会把脚本自身误判为已经运行的守护进程，导致FunctionFS只有ep0；v5.6.2改用FunctionFS ep1判断运行状态，并把运行时PID文件放到`/tmp`。相同修复已在v5.6.1系统的可写overlay上实板验证：冷启动后一条`adb-on`、ADB完全停止后恢复、USB0热拔插、Root Shell、push/pull和大文件照片传输均通过；精确v5.6.2成品仍需烧录复核。4G脚本同时修复BusyBox `modprobe`对已加载模块返回255以及pppd linkname PID文件包含“PID+ppp0”两行的问题，PPP、DNS、HTTPS、NTP和`4g-stop`也已在该临时修复环境中与ADB共存验证。Windows端确认`adb devices -l`出现状态为`device`的`MOSQUITO-T113-DEV`后即可使用`adb shell/push/pull`。重启后ADB重新保持关闭，`usb0-adb-start`和`usb0-adb-stop`只保留作底层诊断。
+
+运行 `mosquito-version` 可读取 `/etc/mosquito-version`，确认当前镜像和板级软件包版本。
 
 ## 当前约束
 
 - CPU 启动频率固定为 720 MHz，核心电源按 PCB 固定 0.95 V 建模。
 - 启动包不含 OP-TEE，不提供 TEE 可信应用、安全存储或基于 OP-TEE 的安全功能。
-- USB摄像头和Air780EG已启用并提供测试命令；DHT30、BQ25895和EA3056仍需完成最终业务程序集成。
-- 显示、音频和无线功能不在当前Mosquito镜像范围内。
+- USB摄像头、Air780EG 和 BQ25895 只读电源诊断已提供测试命令；DHT30、EA3056 以及真正的电池荷电百分比仍需完成最终业务程序集成。精确 SOC 需要额外电量计或经过标定的整机估算模型。
+- 显示、触摸和音频内核组件已裁掉；无线功能不在当前Mosquito镜像范围内。
 - `rootfs` 固定为 TF 第 5 分区，即 `/dev/mmcblk0p5`。
 - `boot` 预留 8 MiB，`rootfs_data` 预留 64 MiB；`UDISK` 使用 TF 卡剩余空间。

@@ -1,0 +1,18 @@
+/dev/ttyS1
+115200
+local
+nocrtscts
+noauth
+noipdefault
+ipcp-accept-local
+ipcp-accept-remote
+defaultroute
+usepeerdns
+persist
+holdoff 5
+maxfail 0
+lcp-echo-interval 20
+lcp-echo-failure 4
+mtu 1400
+mru 1400
+linkname air780eg

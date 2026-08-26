@@ -1482,7 +1482,7 @@ CONFIG_BUSYBOX_CONFIG_FEATURE_LS_COLOR=y
 CONFIG_BUSYBOX_CONFIG_FEATURE_LS_COLOR_IS_DEFAULT=y
 CONFIG_BUSYBOX_CONFIG_MD5SUM=y
 # CONFIG_BUSYBOX_CONFIG_SHA1SUM is not set
-# CONFIG_BUSYBOX_CONFIG_SHA256SUM is not set
+CONFIG_BUSYBOX_CONFIG_SHA256SUM=y
 # CONFIG_BUSYBOX_CONFIG_SHA512SUM is not set
 # CONFIG_BUSYBOX_CONFIG_SHA3SUM is not set
 
@@ -1493,7 +1493,7 @@ CONFIG_BUSYBOX_CONFIG_MD5SUM=y
 CONFIG_BUSYBOX_CONFIG_MKDIR=y
 # CONFIG_BUSYBOX_CONFIG_FEATURE_MKDIR_LONG_OPTIONS is not set
 # CONFIG_BUSYBOX_CONFIG_MKFIFO is not set
-# CONFIG_BUSYBOX_CONFIG_MKNOD is not set
+CONFIG_BUSYBOX_CONFIG_MKNOD=y
 # CONFIG_BUSYBOX_CONFIG_MKTEMP is not set
 CONFIG_BUSYBOX_CONFIG_MV=y
 # CONFIG_BUSYBOX_CONFIG_FEATURE_MV_LONG_OPTIONS is not set
@@ -1510,7 +1510,7 @@ CONFIG_BUSYBOX_CONFIG_READLINK=y
 CONFIG_BUSYBOX_CONFIG_FEATURE_READLINK_FOLLOW=y
 # CONFIG_BUSYBOX_CONFIG_REALPATH is not set
 CONFIG_BUSYBOX_CONFIG_RM=y
-# CONFIG_BUSYBOX_CONFIG_RMDIR is not set
+CONFIG_BUSYBOX_CONFIG_RMDIR=y
 CONFIG_BUSYBOX_CONFIG_SEQ=y
 # CONFIG_BUSYBOX_CONFIG_SHRED is not set
 # CONFIG_BUSYBOX_CONFIG_SHUF is not set
@@ -1547,7 +1547,8 @@ CONFIG_BUSYBOX_CONFIG_USLEEP=y
 # CONFIG_BUSYBOX_CONFIG_UUDECODE is not set
 # CONFIG_BUSYBOX_CONFIG_BASE64 is not set
 # CONFIG_BUSYBOX_CONFIG_UUENCODE is not set
-# CONFIG_BUSYBOX_CONFIG_WC is not set
+CONFIG_BUSYBOX_CONFIG_WC=y
+# CONFIG_BUSYBOX_CONFIG_FEATURE_WC_LARGE is not set
 # CONFIG_BUSYBOX_CONFIG_WHOAMI is not set
 # CONFIG_BUSYBOX_CONFIG_YES is not set
 
@@ -2113,7 +2114,7 @@ CONFIG_BUSYBOX_INIT_BASE_FILES_PATH="busybox-init-base-files"
 # CONFIG_BUSYBOX_INIT_BASE_FILES_RC_LOG is not set
 # CONFIG_BUSYBOX_INIT_BASE_FILES_RC_LOAD_SCRIPT is not set
 # CONFIG_BUSYBOX_INIT_BASE_FILES_RC_MODULES is not set
-# CONFIG_PACKAGE_ca-certificates is not set
+CONFIG_PACKAGE_ca-certificates=y
 # CONFIG_PACKAGE_dnsmasq is not set
 # CONFIG_PACKAGE_dnsmasq-dhcpv6 is not set
 # CONFIG_PACKAGE_dnsmasq-full is not set
@@ -2646,7 +2647,7 @@ CONFIG_LVGL8_USE_SUNXIFB_CACHE=y
 # Libraries
 #
 # CONFIG_PACKAGE_kmod-lib-cordic is not set
-# CONFIG_PACKAGE_kmod-lib-crc-ccitt is not set
+CONFIG_PACKAGE_kmod-lib-crc-ccitt=y
 # CONFIG_PACKAGE_kmod-lib-crc-itu-t is not set
 # CONFIG_PACKAGE_kmod-lib-crc16 is not set
 # CONFIG_PACKAGE_kmod-lib-crc32c is not set
@@ -2781,13 +2782,21 @@ CONFIG_LVGL8_USE_SUNXIFB_CACHE=y
 # CONFIG_PACKAGE_kmod-nat46 is not set
 # CONFIG_PACKAGE_kmod-netem is not set
 # CONFIG_PACKAGE_kmod-pktgen is not set
-# CONFIG_PACKAGE_kmod-ppp is not set
+CONFIG_PACKAGE_kmod-ppp=y
+# CONFIG_PACKAGE_kmod-mppe is not set
+# CONFIG_PACKAGE_kmod-ppp-synctty is not set
+# CONFIG_PACKAGE_kmod-pppoa is not set
+# CONFIG_PACKAGE_kmod-pppoe is not set
+# CONFIG_PACKAGE_kmod-pppol2tp is not set
+# CONFIG_PACKAGE_kmod-pppox is not set
+# CONFIG_PACKAGE_kmod-pptp is not set
 # CONFIG_PACKAGE_kmod-sched is not set
 # CONFIG_PACKAGE_kmod-sched-connmark is not set
 # CONFIG_PACKAGE_kmod-sched-core is not set
 # CONFIG_PACKAGE_kmod-sched-esfq is not set
 # CONFIG_PACKAGE_kmod-sctp is not set
 # CONFIG_PACKAGE_kmod-sit is not set
+CONFIG_PACKAGE_kmod-slhc=y
 # CONFIG_PACKAGE_kmod-slip is not set
 # CONFIG_PACKAGE_kmod-stp is not set
 # CONFIG_PACKAGE_kmod-trelay is not set
@@ -3273,7 +3282,23 @@ CONFIG_PACKAGE_libext2fs=y
 # CONFIG_PACKAGE_libgnutls is not set
 # CONFIG_PACKAGE_libmbedtls is not set
 # CONFIG_PACKAGE_libnss is not set
-# CONFIG_PACKAGE_libopenssl is not set
+CONFIG_PACKAGE_libopenssl=y
+CONFIG_OPENSSL_WITH_EC=y
+# CONFIG_OPENSSL_WITH_EC2M is not set
+# CONFIG_OPENSSL_WITH_DTLS is not set
+# CONFIG_OPENSSL_WITH_COMPRESSION is not set
+CONFIG_OPENSSL_WITH_PSK=y
+CONFIG_OPENSSL_WITH_SRP=y
+CONFIG_OPENSSL_WITH_DEPRECATED=y
+# CONFIG_OPENSSL_OPTIMIZE_SPEED is not set
+CONFIG_OPENSSL_WITH_ASM=y
+# CONFIG_OPENSSL_OTHER_OPTIONS is not set
+CONFIG_OPENSSL_WITH_RSA=y
+CONFIG_OPENSSL_WITH_DES=y
+# CONFIG_OPENSSL_ENGINE is not set
+# CONFIG_OPENSSL_ENGINE_CRYPTO is not set
+# CONFIG_OPENSSL_LEAST_ALG is not set
+CONFIG_OPENSSL_COMPAT_API="1.1.0"
 # CONFIG_PACKAGE_libpolarssl is not set
 
 #
@@ -3338,7 +3363,51 @@ CONFIG_PACKAGE_libblobmsg-json=y
 # CONFIG_PACKAGE_libcroco is not set
 # CONFIG_PACKAGE_libdaemon is not set
 # CONFIG_PACKAGE_libelf1 is not set
-# CONFIG_PACKAGE_libcurl is not set
+CONFIG_PACKAGE_libcurl=y
+
+#
+# SSL support
+#
+# CONFIG_LIBCURL_POLARSSL is not set
+# CONFIG_LIBCURL_MBEDTLS is not set
+# CONFIG_LIBCURL_CYASSL is not set
+# CONFIG_LIBCURL_AXTLS is not set
+CONFIG_LIBCURL_OPENSSL=y
+# CONFIG_LIBCURL_GNUTLS is not set
+# CONFIG_LIBCURL_NOSSL is not set
+
+#
+# Supported protocols
+#
+# CONFIG_LIBCURL_DICT is not set
+CONFIG_LIBCURL_FILE=y
+CONFIG_LIBCURL_FTP=y
+# CONFIG_LIBCURL_GOPHER is not set
+CONFIG_LIBCURL_HTTP=y
+CONFIG_LIBCURL_NGHTTP2=y
+CONFIG_LIBCURL_COOKIES=y
+# CONFIG_LIBCURL_IMAP is not set
+# CONFIG_LIBCURL_LDAP is not set
+# CONFIG_LIBCURL_POP3 is not set
+# CONFIG_LIBCURL_RTSP is not set
+# CONFIG_LIBCURL_SSH2 is not set
+CONFIG_LIBCURL_NO_SMB="!"
+# CONFIG_LIBCURL_SMTP is not set
+# CONFIG_LIBCURL_TELNET is not set
+# CONFIG_LIBCURL_TFTP is not set
+
+#
+# Miscellaneous
+#
+CONFIG_LIBCURL_PROXY=y
+# CONFIG_LIBCURL_CRYPTO_AUTH is not set
+# CONFIG_LIBCURL_TLS_SRP is not set
+# CONFIG_LIBCURL_LIBIDN is not set
+# CONFIG_LIBCURL_THREADED_RESOLVER is not set
+# CONFIG_LIBCURL_ZLIB is not set
+# CONFIG_LIBCURL_UNIX_SOCKETS is not set
+# CONFIG_LIBCURL_LIBCURL_OPTION is not set
+# CONFIG_LIBCURL_VERBOSE is not set
 # CONFIG_PACKAGE_libdb47 is not set
 # CONFIG_PACKAGE_libdb47xx is not set
 # CONFIG_PACKAGE_libdbus is not set
@@ -3406,7 +3475,7 @@ CONFIG_PACKAGE_libjson-c=y
 # CONFIG_PACKAGE_libnettle is not set
 # CONFIG_PACKAGE_libnfnetlink is not set
 # CONFIG_PACKAGE_libnftnl is not set
-# CONFIG_PACKAGE_libnghttp2 is not set
+CONFIG_PACKAGE_libnghttp2=y
 # CONFIG_PACKAGE_libnl is not set
 # CONFIG_PACKAGE_libnl-core is not set
 # CONFIG_PACKAGE_libnl-genl is not set
@@ -3692,7 +3761,7 @@ CONFIG_PACKAGE_zlib=y
 #
 # File Transfer
 #
-# CONFIG_PACKAGE_curl is not set
+CONFIG_PACKAGE_curl=y
 # CONFIG_PACKAGE_wget is not set
 # CONFIG_PACKAGE_wget-nossl is not set
 
@@ -3939,7 +4008,7 @@ CONFIG_PACKAGE_zlib=y
 # CONFIG_PACKAGE_alfred is not set
 # CONFIG_PACKAGE_alljoyn is not set
 # CONFIG_PACKAGE_authsae is not set
-# CONFIG_PACKAGE_chat is not set
+CONFIG_PACKAGE_chat=y
 # CONFIG_PACKAGE_ds-lite is not set
 # CONFIG_PACKAGE_etherwake is not set
 # CONFIG_PACKAGE_ethtool is not set
@@ -3993,8 +4062,15 @@ CONFIG_PACKAGE_zlib=y
 # CONFIG_PACKAGE_omcproxy is not set
 # CONFIG_PACKAGE_openldap-server is not set
 # CONFIG_PACKAGE_oping is not set
-# CONFIG_PACKAGE_ppp is not set
+CONFIG_PACKAGE_ppp=y
+# CONFIG_PACKAGE_ppp-mod-pppoa is not set
+# CONFIG_PACKAGE_ppp-mod-pppoe is not set
+# CONFIG_PACKAGE_ppp-mod-pppol2tp is not set
+# CONFIG_PACKAGE_ppp-mod-pptp is not set
+# CONFIG_PACKAGE_ppp-mod-radius is not set
 # CONFIG_PACKAGE_ppp-multilink is not set
+# CONFIG_PACKAGE_pppdump is not set
+# CONFIG_PACKAGE_pppstats is not set
 # CONFIG_PACKAGE_rssileds is not set
 # CONFIG_PACKAGE_samba36-client is not set
 # CONFIG_PACKAGE_samba36-server is not set

@@ -1,0 +1,33 @@
+#!/bin/sh /etc/rc.common
+
+START=99
+
+MIN_UPTIME=10
+TMP_LOG=/tmp/mosquito-usb0-autostart.log
+PERSIST_DIR=/overlay/mosquito-test
+
+start()
+{
+	(
+		mkdir -p "$PERSIST_DIR"
+		: > "$TMP_LOG"
+		echo "[INFO] automatic USB0 ADB startup requested; minimum uptime=${MIN_UPTIME}s" >> "$TMP_LOG"
+		while :; do
+			up="$(cut -d. -f1 /proc/uptime 2>/dev/null)"
+			case "$up" in ''|*[!0-9]*) up=0 ;; esac
+			[ "$up" -ge "$MIN_UPTIME" ] && break
+			sleep 1
+		done
+		if MOSQUITO_USB0_MIN_UPTIME="$MIN_UPTIME" /usr/bin/usb0-adb-start all >> "$TMP_LOG" 2>&1; then
+			echo '[PASS] automatic USB0 ADB startup completed' >> "$TMP_LOG"
+		else
+			echo '[FAIL] automatic USB0 ADB startup failed; UART0 remains available' >> "$TMP_LOG"
+		fi
+		cp "$TMP_LOG" "$PERSIST_DIR/usb0-autostart.log" 2>/dev/null
+	) &
+}
+
+stop()
+{
+	/usr/bin/usb0-adb-stop >/dev/null 2>&1
+}

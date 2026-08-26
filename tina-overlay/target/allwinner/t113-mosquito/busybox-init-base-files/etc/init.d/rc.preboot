@@ -1,0 +1,4 @@
+#!/bin/sh
+
+# USB0 ADB is deliberately not started here.  After the shell is ready, use
+# the UART0 command "adb-on" to prepare and bind the ADB-only USB gadget.

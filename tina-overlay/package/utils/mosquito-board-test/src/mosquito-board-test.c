@@ -349,6 +349,35 @@ static int i2c_read_reg(int fd, uint8_t address, uint8_t reg, uint8_t *value)
 	return i2c_xfer(fd, address, &reg, 1, value, 1);
 }
 
+static int i2c_write_reg(int fd, uint8_t address, uint8_t reg, uint8_t value)
+{
+	uint8_t data[2] = { reg, value };
+	return i2c_xfer(fd, address, data, sizeof(data), NULL, 0);
+}
+
+static int bq25895_refresh_adc(int fd)
+{
+	uint8_t reg02;
+	int i;
+
+	if (i2c_read_reg(fd, 0x6a, 0x02, &reg02) < 0)
+		return -1;
+	if (reg02 & 0x40) {
+		/* Continuous conversion is already active; wait for a fresh sample. */
+		usleep(1100000);
+		return 0;
+	}
+	/* Preserve every charger setting and request one transient ADC conversion. */
+	if (i2c_write_reg(fd, 0x6a, 0x02, (uint8_t)(reg02 | 0x80)) < 0)
+		return -1;
+	for (i = 0; i < 15; ++i) {
+		usleep(100000);
+		if (i2c_read_reg(fd, 0x6a, 0x02, &reg02) == 0 && !(reg02 & 0x80))
+			return 0;
+	}
+	return -1;
+}
+
 static uint8_t dht_crc8(const uint8_t *data, size_t len)
 {
 	uint8_t crc = 0xff;
@@ -428,6 +457,12 @@ static void test_bq25895(int fd)
 	}
 	result(R_PASS, "BQ25895@0x6a", "part register 0x14=0x%02x (PN=%u, revision=%u)",
 	       r14, (r14 >> 3) & 0x07, r14 & 0x03);
+	if (((r14 >> 3) & 0x07) != 7)
+		result(R_WARN, "BQ-part-number", "PN bits are not the BQ25895 value 111");
+	if (bq25895_refresh_adc(fd) < 0)
+		result(R_WARN, "BQ-ADC", "could not trigger a fresh ADC conversion; values may be stale");
+	else
+		result(R_PASS, "BQ-ADC", "fresh battery-monitor conversion completed");
 	if (i2c_read_reg(fd, 0x6a, 0x0b, &r0b) == 0 &&
 	    i2c_read_reg(fd, 0x6a, 0x0c, &r0c) == 0 &&
 	    i2c_read_reg(fd, 0x6a, 0x0e, &r0e) == 0 &&
@@ -444,6 +479,73 @@ static void test_bq25895(int fd)
 	} else {
 		result(R_WARN, "BQ-status", "chip ID works, but one or more status reads failed");
 	}
+}
+
+static void test_power(void)
+{
+	int fd;
+	uint8_t r0b, r0c, r0e, r0f, r10, r11, r12, r13, r14;
+	static const char *const vbus_names[] = {
+		"none", "USB-SDP", "USB-CDP", "USB-DCP", "MAXCHARGE", "unknown", "non-standard", "OTG"
+	};
+	static const char *const charge_names[] = {
+		"not charging", "pre-charge", "fast-charge", "charge done"
+	};
+
+	section("BQ25895 BATTERY / POWER MONITOR");
+	fd = open("/dev/i2c-0", O_RDWR);
+	if (fd < 0) {
+		result(R_FAIL, "power-i2c", "cannot open /dev/i2c-0: %s", strerror(errno));
+		return;
+	}
+	if (i2c_read_reg(fd, 0x6a, 0x14, &r14) < 0) {
+		result(R_FAIL, "BQ25895@0x6a", "part-information register did not respond");
+		close(fd);
+		return;
+	}
+	result(((r14 >> 3) & 7) == 7 ? R_PASS : R_FAIL, "BQ-part-number",
+	       "REG14=0x%02x PN=%u revision=%u (BQ25895 expects PN=7)",
+	       r14, (r14 >> 3) & 7, r14 & 3);
+	if (bq25895_refresh_adc(fd) < 0) {
+		result(R_FAIL, "BQ-ADC", "fresh ADC conversion did not complete within 1.5 seconds");
+		close(fd);
+		return;
+	}
+	result(R_PASS, "BQ-ADC", "fresh one-shot/continuous ADC sample is ready");
+	if (i2c_read_reg(fd, 0x6a, 0x0b, &r0b) < 0 ||
+	    i2c_read_reg(fd, 0x6a, 0x0c, &r0c) < 0 ||
+	    i2c_read_reg(fd, 0x6a, 0x0e, &r0e) < 0 ||
+	    i2c_read_reg(fd, 0x6a, 0x0f, &r0f) < 0 ||
+	    i2c_read_reg(fd, 0x6a, 0x10, &r10) < 0 ||
+	    i2c_read_reg(fd, 0x6a, 0x11, &r11) < 0 ||
+	    i2c_read_reg(fd, 0x6a, 0x12, &r12) < 0 ||
+	    i2c_read_reg(fd, 0x6a, 0x13, &r13) < 0) {
+		result(R_FAIL, "BQ-registers", "one or more monitor registers could not be read");
+		close(fd);
+		return;
+	}
+	result(R_PASS, "battery-voltage", "%u mV (REG0E=0x%02x)",
+	       2304 + (r0e & 0x7f) * 20, r0e);
+	result(R_INFO, "system-voltage", "%u mV (REG0F=0x%02x)",
+	       2304 + (r0f & 0x7f) * 20, r0f);
+	result(R_INFO, "input-power", "VBUS-good=%u, VBUS~%u mV, source=%s",
+	       (r11 >> 7) & 1, 2600 + (r11 & 0x7f) * 100,
+	       vbus_names[(r0b >> 5) & 7]);
+	result(R_INFO, "charge-state", "%s, charge-current~%u mA",
+	       charge_names[(r0b >> 3) & 3], (r12 & 0x7f) * 50);
+	result(R_INFO, "temperature", "TS=%u.%03u%% of REGN (REG10=0x%02x)",
+	       (21000 + (r10 & 0x7f) * 465) / 1000,
+	       (21000 + (r10 & 0x7f) * 465) % 1000, r10);
+	result(r0c == 0 ? R_PASS : R_WARN, "power-faults",
+	       "REG0C=0x%02x (watchdog=%u boost=%u charge=%u battery=%u NTC=%u)",
+	       r0c, (r0c >> 7) & 1, (r0c >> 6) & 1, (r0c >> 4) & 3,
+	       (r0c >> 3) & 1, r0c & 7);
+	result((r13 & 0xc0) ? R_WARN : R_INFO, "input-limits",
+	       "VINDPM=%u IINDPM=%u effective-limit~%u mA (REG13=0x%02x)",
+	       (r13 >> 7) & 1, (r13 >> 6) & 1, 100 + (r13 & 0x3f) * 50, r13);
+	result(R_INFO, "power-meaning",
+	       "voltage and charge state are available; accurate state-of-charge percentage requires a fuel gauge");
+	close(fd);
 }
 
 static void test_ea3056(int fd)
@@ -634,8 +736,33 @@ static int open_air780eg(void)
 {
 	int fd = -1;
 	char response[1024];
+	char pidbuf[32];
+	const char *owner;
 	int i;
 	bool alive = false;
+	long ppp_pid;
+	long lock_pid;
+
+	if (read_file("/var/run/mosquito-air780eg-start.lock/pid", pidbuf, sizeof(pidbuf)) > 0) {
+		lock_pid = strtol(pidbuf, NULL, 10);
+		owner = getenv("MOSQUITO_AIR_UART_OWNER");
+		if (lock_pid > 1 && (!owner || strtol(owner, NULL, 10) != lock_pid)) {
+			result(R_FAIL, "Air-UART", "4g-start PID %ld is preparing /dev/ttyS1; retry later", lock_pid);
+			return -1;
+		}
+	}
+
+	if (access("/sys/class/net/ppp0", F_OK) == 0) {
+		result(R_FAIL, "Air-UART", "ppp0 is active; run 4g-stop before an Air780EG diagnostic");
+		return -1;
+	}
+	if (read_file("/var/run/ppp-air780eg.pid", pidbuf, sizeof(pidbuf)) > 0) {
+		ppp_pid = strtol(pidbuf, NULL, 10);
+		if (ppp_pid > 1 && kill((pid_t)ppp_pid, 0) == 0) {
+			result(R_FAIL, "Air-UART", "pppd PID %ld owns /dev/ttyS1; run 4g-stop first", ppp_pid);
+			return -1;
+		}
+	}
 
 	if (g_gpio_base < 0)
 		g_gpio_base = find_gpio_base();
@@ -698,6 +825,38 @@ static int open_air780eg(void)
 	return fd;
 }
 
+static void report_masked_iccid(int fd)
+{
+	char response[2048];
+	char digits[32];
+	char masked[40];
+	size_t count = 0, i, visible;
+
+	if (at_command(fd, "AT+CCID", response, sizeof(response), 5000) < 0) {
+		result(R_WARN, "SIM-ICCID", "AT+CCID returned no data");
+		return;
+	}
+	compact_response(response);
+	if (!response_ok(response)) {
+		result(R_WARN, "SIM-ICCID", "AT+CCID did not complete successfully");
+		return;
+	}
+	for (i = 0; response[i] && count + 1 < sizeof(digits); ++i)
+		if (response[i] >= '0' && response[i] <= '9')
+			digits[count++] = response[i];
+	digits[count] = '\0';
+	if (count < 8) {
+		result(R_WARN, "SIM-ICCID", "response did not contain a recognizable ICCID");
+		return;
+	}
+	visible = count > 4 ? count - 4 : 0;
+	for (i = 0; i < visible; ++i)
+		masked[i] = '*';
+	memcpy(masked + visible, digits + visible, count - visible);
+	masked[count] = '\0';
+	result(R_PASS, "SIM-ICCID", "card identifier present: %s", masked);
+}
+
 static void test_air780eg(void)
 {
 	int fd;
@@ -743,6 +902,113 @@ static void test_air780eg(void)
 	close(fd);
 }
 
+static void test_sim(void)
+{
+	int fd;
+	char response[2048];
+	int detect_mode = -1, detect_level = -1;
+	int sim_id = -1;
+	bool detect_query_ok, cross_query_ok, slot_query_ok, cpin_ok;
+	bool slot_present = false, sim_ready = false;
+	int probed_slot = -1;
+	char slot_state[16] = { 0 };
+	char *p;
+
+	section("AIR780EG SIM READ-ONLY DIAGNOSTIC");
+	fd = open_air780eg();
+	if (fd < 0)
+		return;
+
+	report_at(fd, "Air-model", "ATI", "AirM2M", 2000,
+		  response, sizeof(response));
+
+	detect_query_ok = report_at(fd, "SIM-detect-config", "AT+CSDT?", "+CSDT:", 2500,
+				    response, sizeof(response));
+	if (detect_query_ok) {
+		p = strstr(response, "+CSDT:");
+		if (p && sscanf(p, "+CSDT: %d,%d", &detect_mode, &detect_level) < 1)
+			detect_mode = -1;
+	}
+	if (detect_mode == 0) {
+		result(R_PASS, "USIM_DET-pin79",
+		       "hardware presence detection is disabled; the unconnected pin 79 cannot block SIM use");
+	} else if (detect_mode == 1) {
+		result(R_WARN, "USIM_DET-pin79",
+		       "hardware presence detection is enabled (active level %s); this PCB does not route pin 79",
+		       detect_level == 0 ? "low" : detect_level == 1 ? "high" : "firmware default/high");
+	} else {
+		result(R_WARN, "USIM_DET-pin79",
+		       "could not determine the hardware presence-detect setting");
+	}
+
+	cross_query_ok = report_at(fd, "SIM-interface", "AT+SIMCROSS?", "+SIMCROSS:", 2500,
+				   response, sizeof(response));
+	if (cross_query_ok) {
+		p = strstr(response, "+SIMCROSS:");
+		if (!p || sscanf(p, "+SIMCROSS: %d", &sim_id) != 1)
+			sim_id = -1;
+	}
+	if (sim_id == 0) {
+		result(R_PASS, "SIM-primary-bus",
+		       "interface 0 is selected; this is the primary USIM bus on module pins 11-14 used by CARD2");
+	} else if (sim_id == 1) {
+		result(R_WARN, "SIM-primary-bus",
+		       "interface 1 is selected, but CARD2 is wired to the primary interface (module pins 11-14)");
+	} else {
+		result(R_WARN, "SIM-primary-bus", "could not determine which SIM interface is selected");
+	}
+
+	slot_query_ok = report_at(fd, "SIM-slot-probe", "AT*SIMDETEC=1", "*SIMDETEC:", 3000,
+				  response, sizeof(response));
+	if (slot_query_ok) {
+		p = strstr(response, "*SIMDETEC:");
+		if (p)
+			sscanf(p, "*SIMDETEC: %d,%15[A-Z]", &probed_slot, slot_state);
+		if (probed_slot == 1 && !strcmp(slot_state, "SIM")) {
+			slot_present = true;
+			result(R_PASS, "SIM-present", "the modem reports a card in its primary slot");
+		} else if (probed_slot == 1 && !strcmp(slot_state, "NOS")) {
+			result(R_WARN, "SIM-present", "the modem reports no card in its primary slot");
+		} else {
+			result(R_WARN, "SIM-present", "unrecognized slot state: %s", response);
+		}
+	}
+
+	cpin_ok = report_at(fd, "SIM-auth", "AT+CPIN?", "+CPIN:", 5000,
+			    response, sizeof(response));
+	if (cpin_ok && strstr(response, "READY")) {
+		sim_ready = true;
+		result(R_PASS, "SIM-ready", "SIM electrical interface and card initialization are working");
+		report_masked_iccid(fd);
+	} else if (cpin_ok) {
+		result(R_WARN, "SIM-ready", "the card responded but is not READY: %s", response);
+	} else if (strstr(response, "+CME ERROR: 10")) {
+		result(R_WARN, "SIM-ready", "+CME ERROR: 10 means the modem still considers the SIM absent");
+	} else {
+		result(R_WARN, "SIM-ready", "SIM initialization did not complete");
+	}
+
+	section("SIM DIAGNOSIS");
+	if (sim_ready) {
+		result(R_PASS, "SIM-conclusion", "SIM is usable; pin 79 is not blocking this card");
+	} else if (sim_id == 1) {
+		result(R_WARN, "SIM-conclusion",
+		       "the modem is looking at the secondary interface while this PCB socket is on the primary bus");
+	} else if (detect_mode == 1) {
+		result(R_WARN, "SIM-conclusion",
+		       "pin 79 detection is enabled but not routed; test again with CSDT disabled before judging the socket");
+	} else if (detect_mode == 0 && sim_id == 0 && !slot_present) {
+		result(R_MANUAL, "SIM-conclusion",
+		       "pin 79 is excluded; measure CARD2 pin 1/C81 for about 1.8 V or 3.0 V during AT+CPIN?, then inspect CARD2 contacts and R52/R53/R54");
+	} else {
+		result(R_MANUAL, "SIM-conclusion",
+		       "inspect SIM power, socket contact/footprint mapping, and the DAT/RST/CLK series-resistor paths");
+	}
+	result(R_INFO, "SIM-safety",
+	       "this test sent query/probe commands only; it did not use AT&W, change SIM selection, or reboot the modem");
+	close(fd);
+}
+
 static bool nonzero_coordinate(const char *s)
 {
 	while (*s == '-' || *s == '+' || *s == '0' || *s == '.')
@@ -750,13 +1016,75 @@ static bool nonzero_coordinate(const char *s)
 	return *s != '\0' && *s != ',' && *s != ' ';
 }
 
+struct gnss_info {
+	int run;
+	int fix;
+	int fix_mode;
+	int satellites_view;
+	int satellites_gnss;
+	int satellites_glonass;
+	char utc[40];
+	char latitude[40];
+	char longitude[40];
+	char altitude[40];
+	char hdop[24];
+	char cn0_max[24];
+};
+
+static int parse_cgnsinf(const char *response, struct gnss_info *info)
+{
+	char copy[1536];
+	char *start, *field, *end;
+	int index = 0;
+
+	memset(info, 0, sizeof(*info));
+	info->run = info->fix = info->fix_mode = -1;
+	info->satellites_view = info->satellites_gnss = info->satellites_glonass = -1;
+	start = strstr(response, "+CGNSINF:");
+	if (!start)
+		return -1;
+	start += strlen("+CGNSINF:");
+	while (*start == ' ')
+		++start;
+	snprintf(copy, sizeof(copy), "%s", start);
+	field = copy;
+	while (field && index < 21) {
+		end = strchr(field, ',');
+		if (end)
+			*end = '\0';
+		while (*field == ' ')
+			++field;
+		switch (index) {
+		case 0: info->run = atoi(field); break;
+		case 1: info->fix = atoi(field); break;
+		case 2: snprintf(info->utc, sizeof(info->utc), "%s", field); break;
+		case 3: snprintf(info->latitude, sizeof(info->latitude), "%s", field); break;
+		case 4: snprintf(info->longitude, sizeof(info->longitude), "%s", field); break;
+		case 5: snprintf(info->altitude, sizeof(info->altitude), "%s", field); break;
+		case 8: info->fix_mode = atoi(field); break;
+		case 10: snprintf(info->hdop, sizeof(info->hdop), "%s", field); break;
+		case 14: info->satellites_view = atoi(field); break;
+		case 15: info->satellites_gnss = atoi(field); break;
+		case 16: info->satellites_glonass = atoi(field); break;
+		case 18: snprintf(info->cn0_max, sizeof(info->cn0_max), "%s", field); break;
+		default: break;
+		}
+		++index;
+		field = end ? end + 1 : NULL;
+	}
+	return index >= 5 ? 0 : -1;
+}
+
 static void test_gnss(void)
 {
 	int fd;
 	char response[2048];
 	long long deadline;
+	long long started;
 	int poll = 0;
 	bool fixed = false;
+	bool show_coordinates = false;
+	struct gnss_info info;
 
 	section("AIR780EG GNSS OUTDOOR FIX TEST");
 	fd = open_air780eg();
@@ -768,28 +1096,44 @@ static void test_gnss(void)
 		return;
 	}
 	g_gnss_stop = 0;
+	show_coordinates = getenv("MOSQUITO_GNSS_SHOW_COORDS") &&
+		!strcmp(getenv("MOSQUITO_GNSS_SHOW_COORDS"), "1");
 	signal(SIGINT, request_gnss_stop);
 	signal(SIGTERM, request_gnss_stop);
 	result(R_INFO, "GNSS-wait", "polling for up to 5 minutes; place the GNSS antenna outdoors with open sky");
-	deadline = monotonic_ms() + 300000;
+	started = monotonic_ms();
+	deadline = started + 300000;
 	while (!g_gnss_stop && monotonic_ms() < deadline) {
-		char *p;
-		int run = 0, fix = 0;
-		char utc[40] = { 0 }, lat[40] = { 0 }, lon[40] = { 0 };
 		++poll;
 		if (at_command(fd, "AT+CGNSINF", response, sizeof(response), 2500) == 0) {
 			compact_response(response);
-			p = strstr(response, "+CGNSINF:");
-			if (p && sscanf(p, "+CGNSINF: %d,%d,%39[^,],%39[^,],%39[^,]",
-					&run, &fix, utc, lat, lon) == 5) {
-				if (fix == 1 && nonzero_coordinate(lat) && nonzero_coordinate(lon)) {
-					result(R_PASS, "GNSS-fix", "UTC=%s latitude=%s longitude=%s", utc, lat, lon);
+			if (parse_cgnsinf(response, &info) == 0) {
+				if (info.fix == 1 && nonzero_coordinate(info.latitude) &&
+				    nonzero_coordinate(info.longitude)) {
+					result(R_PASS, "GNSS-fix", "3D/2D fix acquired after %lld seconds; UTC=%s",
+					       (monotonic_ms() - started) / 1000,
+					       info.utc[0] ? info.utc : "unknown");
+					result(R_INFO, "GNSS-quality",
+					       "mode=%d altitude=%s m HDOP=%s satellites(view/GNSS/GLONASS)=%d/%d/%d C/N0-max=%s dBHz",
+					       info.fix_mode, info.altitude[0] ? info.altitude : "unknown",
+					       info.hdop[0] ? info.hdop : "unknown", info.satellites_view,
+					       info.satellites_gnss, info.satellites_glonass,
+					       info.cn0_max[0] ? info.cn0_max : "unknown");
+					if (show_coordinates)
+						result(R_INFO, "GNSS-location", "latitude=%s longitude=%s (sensitive)",
+						       info.latitude, info.longitude);
+					else
+						result(R_INFO, "GNSS-location", "valid coordinates received; hidden from logs by default");
 					fixed = true;
 					break;
 				}
 				if (poll == 1 || poll % 8 == 0)
-					result(R_INFO, "GNSS-search", "run=%d fix=%d UTC=%s latitude=%s longitude=%s",
-					       run, fix, utc[0] ? utc : "none", lat[0] ? lat : "none", lon[0] ? lon : "none");
+					result(R_INFO, "GNSS-search",
+					       "run=%d fix=%d mode=%d UTC=%s satellites(view/GNSS/GLONASS)=%d/%d/%d C/N0-max=%s",
+					       info.run, info.fix, info.fix_mode,
+					       info.utc[0] ? info.utc : "none", info.satellites_view,
+					       info.satellites_gnss, info.satellites_glonass,
+					       info.cn0_max[0] ? info.cn0_max : "unknown");
 			} else if (poll == 1 || poll % 8 == 0) {
 				result(R_WARN, "GNSS-response", "unexpected response: %s", response);
 			}
@@ -837,6 +1181,17 @@ static void test_usb1_host(void)
 	DIR *dir;
 	struct dirent *de;
 	int roots = 0, devices = 0;
+	const char *lock_dir = "/var/run/mosquito-camera.lock";
+	const char *lock_pid = "/var/run/mosquito-camera.lock/pid";
+	char pid_text[32];
+
+	if (mkdir(lock_dir, 0755) < 0) {
+		result(R_WARN, "USB1-camera-lock", "camera is busy; skipping PE0/CAM_EN power test");
+		return;
+	}
+	snprintf(pid_text, sizeof(pid_text), "%ld\n", (long)getpid());
+	if (write_file(lock_pid, pid_text) < 0)
+		result(R_WARN, "USB1-camera-lock", "cannot write camera lock owner PID");
 
 	if (g_gpio_base < 0)
 		g_gpio_base = find_gpio_base();
@@ -865,6 +1220,8 @@ static void test_usb1_host(void)
 		result(R_MANUAL, "USB1-data", "insert a known-good USB flash drive into CN2 and rerun this command");
 	if (g_gpio_base >= 0 && gpio_direction(GPIO_PE0, 0) == 0)
 		result(R_INFO, "USB1-power", "PE0/CAM_EN returned low after enumeration check");
+	unlink(lock_pid);
+	rmdir(lock_dir);
 }
 
 static void test_usb0_device(void)
@@ -910,7 +1267,7 @@ static void print_manual_checks(void)
 int main(int argc, char **argv)
 {
 	const char *program = strrchr(argv[0], '/');
-	bool air_only, gnss_only;
+	bool air_only, gnss_only, sim_only, power_only;
 	const char *tmp_log = "/tmp/mosquito-board-test.log";
 	const char *persistent_name = "board-test.log";
 	char persistent_path[PATH_MAX];
@@ -920,12 +1277,16 @@ int main(int argc, char **argv)
 		(argc == 2 && !strcmp(argv[1], "air"));
 	gnss_only = !strcmp(program, "gnss-test") ||
 		(argc == 2 && !strcmp(argv[1], "gnss"));
+	sim_only = !strcmp(program, "sim-test") ||
+		(argc == 2 && !strcmp(argv[1], "sim"));
+	power_only = !strcmp(program, "power-test") ||
+		(argc == 2 && !strcmp(argv[1], "power"));
 	setvbuf(stdout, NULL, _IOLBF, 0);
 	if (air_only) {
 		tmp_log = "/tmp/mosquito-air-test.log";
 		persistent_name = "air-test.log";
 		g_log = fopen(tmp_log, "w");
-		emit("Mosquito T113-S3 Air780EG LTE/SIM diagnostic v2.3\n");
+		emit("Mosquito T113-S3 Air780EG LTE/SIM diagnostic (board package 2.10)\n");
 		emit("Safe policy: one PWRKEY boot pulse is allowed only when needed; RESET_N is never pulsed.\n");
 		test_air780eg();
 		section("SUMMARY");
@@ -934,14 +1295,32 @@ int main(int argc, char **argv)
 		tmp_log = "/tmp/mosquito-gnss-test.log";
 		persistent_name = "gnss-test.log";
 		g_log = fopen(tmp_log, "w");
-		emit("Mosquito T113-S3 Air780EG GNSS diagnostic v2.3\n");
+		emit("Mosquito T113-S3 Air780EG GNSS diagnostic (board package 2.10)\n");
 		emit("Safe policy: RESET_N is never pulsed; GNSS is switched off when the test finishes.\n");
 		test_gnss();
 		section("SUMMARY");
 		emit("PASS=%d  FAIL=%d  WARN=%d  MANUAL=%d\n", g_pass, g_fail, g_warn, g_manual);
+	} else if (sim_only) {
+		tmp_log = "/tmp/mosquito-sim-test.log";
+		persistent_name = "sim-test.log";
+		g_log = fopen(tmp_log, "w");
+		emit("Mosquito T113-S3 Air780EG SIM diagnostic (board package 2.10)\n");
+		emit("Safe policy: SIM settings are read only; AT&W and RESET_N are never used.\n");
+		test_sim();
+		section("SUMMARY");
+		emit("PASS=%d  FAIL=%d  WARN=%d  MANUAL=%d\n", g_pass, g_fail, g_warn, g_manual);
+	} else if (power_only) {
+		tmp_log = "/tmp/mosquito-power-test.log";
+		persistent_name = "power-test.log";
+		g_log = fopen(tmp_log, "w");
+		emit("Mosquito T113-S3 BQ25895 power diagnostic (board package 2.10)\n");
+		emit("Safe policy: charger settings are preserved; only a transient ADC conversion is requested.\n");
+		test_power();
+		section("SUMMARY");
+		emit("PASS=%d  FAIL=%d  WARN=%d  MANUAL=%d\n", g_pass, g_fail, g_warn, g_manual);
 	} else {
 		g_log = fopen(tmp_log, "w");
-		emit("Mosquito T113-S3 whole-board diagnostic v2.3\n");
+		emit("Mosquito T113-S3 whole-board diagnostic (board package 2.10)\n");
 		emit("Safe policy: no storage writes outside a temporary overlay test; Air RESET_N is never pulsed.\n");
 		test_board_basics();
 		test_status_gpios();
@@ -963,7 +1342,7 @@ int main(int argc, char **argv)
 	snprintf(persistent_path, sizeof(persistent_path), "/overlay/mosquito-test/%s", persistent_name);
 	if (copy_file(tmp_log, persistent_path) == 0)
 		emit("Persistent report: %s\n", persistent_path);
-	if (!air_only && !gnss_only)
+	if (!air_only && !gnss_only && !sim_only && !power_only)
 		copy_file(tmp_log, "/overlay/mosquito-board-test.log");
 	if (g_log)
 		fclose(g_log);

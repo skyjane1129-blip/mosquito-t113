@@ -1,0 +1,9 @@
+#!/bin/sh
+
+VERSION_FILE=/etc/mosquito-version
+
+if [ ! -r "$VERSION_FILE" ]; then
+	echo "[FAIL] version file is missing: $VERSION_FILE" >&2
+	exit 1
+fi
+cat "$VERSION_FILE"

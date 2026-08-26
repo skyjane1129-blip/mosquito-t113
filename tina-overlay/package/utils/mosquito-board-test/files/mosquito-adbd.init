@@ -1,24 +1,39 @@
 #!/bin/sh /etc/rc.common
 
-# Intentionally no START/STOP values: dev-v2 must never start ADB from rcS.
-USE_PROCD=1
-
-GADGET=/sys/kernel/config/usb_gadget/g1
+# Intentionally no START/STOP values: only a deliberate adb-on (or the legacy
+# usb0-adb-start command) may start this development daemon after boot.
 FFS=/dev/usb-ffs/adb
+LOG=/tmp/mosquito-adbd.log
+PIDFILE=/tmp/mosquito-adbd.pid
 
-start_service()
+start()
 {
 	grep -q " $FFS functionfs " /proc/mounts || return 1
-	procd_open_instance
-	procd_set_param command /bin/adbd
-	procd_set_param env ADB_AUTH_ENABLE=0
-	procd_set_param respawn 5 5 0
-	procd_set_param oom_score_adj -17
-	procd_close_instance
+	[ -e "$FFS/ep1" ] && return 0
+	: > "$LOG"
+	(
+		export ADB_AUTH_ENABLE=0
+		exec /bin/adbd >> "$LOG" 2>&1
+	) &
+	ADBD_PID=$!
+	echo "$ADBD_PID" > "$PIDFILE"
+	# The vendor adbd is a foreground daemon.  Give it a short window to
+	# expose an immediate startup failure, then return so usb0-adb-start can
+	# wait for FunctionFS ep1/ep2.
+	attempt=0
+	while [ "$attempt" -lt 10 ]; do
+		kill -0 "$ADBD_PID" 2>/dev/null || return 1
+		[ -e "$FFS/ep1" ] && return 0
+		attempt=$((attempt + 1))
+		usleep 100000
+	done
+	return 1
 }
 
-stop_service()
+stop()
 {
-	BOUND="$(cat "$GADGET/UDC" 2>/dev/null)"
-	[ -n "$BOUND" ] && echo '' > "$GADGET/UDC" 2>/dev/null
+	PIDS="$(cat "$PIDFILE" 2>/dev/null)"
+	[ -n "$PIDS" ] && kill $PIDS 2>/dev/null
+	rm -f "$PIDFILE"
+	return 0
 }

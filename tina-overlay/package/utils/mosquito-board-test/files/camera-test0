@@ -1,0 +1,146 @@
+#!/bin/sh
+
+TMP_LOG=/tmp/mosquito-camera-test0.log
+PERSIST_DIR=/overlay/mosquito-test
+CAPABILITIES_FILE=$PERSIST_DIR/camera-focus-capabilities.conf
+LOCK_DIR=/var/run/mosquito-camera.lock
+GPIO_OFFSET=128
+CAM_GPIO=
+LOCK_HELD=0
+
+mkdir -p "$PERSIST_DIR" /var/run
+: > "$TMP_LOG"
+
+log()
+{
+	echo "$*"
+	echo "$*" >> "$TMP_LOG"
+}
+
+power_camera_off()
+{
+	if [ -n "$CAM_GPIO" ] && [ -e "/sys/class/gpio/gpio$CAM_GPIO/direction" ]; then
+		sleep 1
+		echo low > "/sys/class/gpio/gpio$CAM_GPIO/direction" 2>/dev/null
+		sleep 2
+		CAM_GPIO=
+	fi
+}
+
+finish()
+{
+	power_camera_off
+	if [ "$LOCK_HELD" -eq 1 ]; then
+		rm -f "$LOCK_DIR/pid" 2>/dev/null
+		rmdir "$LOCK_DIR" 2>/dev/null
+	fi
+	cp "$TMP_LOG" "$PERSIST_DIR/camera-test0.log" 2>/dev/null
+}
+trap finish 0
+trap 'exit 129' 1
+trap 'exit 130' 2
+trap 'exit 143' 15
+
+log 'Mosquito camera focus capability detection'
+log 'Policy: power the camera, read firmware-declared focus controls, then turn camera power off without taking a photo.'
+
+if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+	LOCK_PID="$(cat "$LOCK_DIR/pid" 2>/dev/null)"
+	if [ -n "$LOCK_PID" ] && kill -0 "$LOCK_PID" 2>/dev/null; then
+		log "[FAIL] camera is busy in PID $LOCK_PID"
+		exit 1
+	fi
+	rm -f "$LOCK_DIR/pid" 2>/dev/null
+	rmdir "$LOCK_DIR" 2>/dev/null
+	mkdir "$LOCK_DIR" 2>/dev/null || {
+		log '[FAIL] cannot acquire camera lock'
+		exit 1
+	}
+fi
+echo $$ > "$LOCK_DIR/pid"
+LOCK_HELD=1
+
+BASE=
+BEST_NGPIO=0
+for CHIP in /sys/class/gpio/gpiochip*; do
+	[ -e "$CHIP/base" ] || continue
+	N="$(cat "$CHIP/ngpio" 2>/dev/null)"
+	case "$N" in ''|*[!0-9]*) continue ;; esac
+	if [ "$N" -gt "$BEST_NGPIO" ]; then
+		BEST_NGPIO="$N"
+		BASE="$(cat "$CHIP/base" 2>/dev/null)"
+	fi
+done
+if [ -z "$BASE" ]; then
+	log '[FAIL] cannot locate the main GPIO controller'
+	exit 1
+fi
+CAM_GPIO=$((BASE + GPIO_OFFSET))
+[ -e "/sys/class/gpio/gpio$CAM_GPIO" ] || echo "$CAM_GPIO" > /sys/class/gpio/export 2>/dev/null
+sleep 1
+if ! echo high > "/sys/class/gpio/gpio$CAM_GPIO/direction" 2>/dev/null; then
+	log '[FAIL] cannot assert PE0/CAM_EN'
+	exit 1
+fi
+log '[PASS] PE0/CAM_EN asserted'
+
+VIDEO=
+WAIT=0
+while [ "$WAIT" -lt 10 ]; do
+	for CANDIDATE in /dev/video*; do
+		[ -e "$CANDIDATE" ] || continue
+		FORMATS="$(v4l2-ctl -d "$CANDIDATE" --list-formats-ext 2>/dev/null)"
+		if echo "$FORMATS" | grep -q "'MJPG'" && echo "$FORMATS" | grep -q '3264x2448'; then
+			VIDEO="$CANDIDATE"
+			break
+		fi
+	done
+	[ -n "$VIDEO" ] && break
+	sleep 1
+	WAIT=$((WAIT + 1))
+done
+if [ -z "$VIDEO" ]; then
+	log '[FAIL] no video node supporting 3264x2448 MJPEG appeared'
+	exit 1
+fi
+log "[PASS] UVC video node appeared: $VIDEO"
+
+CONTROLS="$(v4l2-ctl -d "$VIDEO" --list-ctrls 2>> "$TMP_LOG")"
+echo "$CONTROLS" >> "$TMP_LOG"
+FOCUS_LINE="$(echo "$CONTROLS" | sed -n '/^[[:space:]]*focus_absolute[[:space:]]/p' | sed -n '1p')"
+AUTO_LINE="$(echo "$CONTROLS" | sed -n '/^[[:space:]]*focus_auto[[:space:]]/p' | sed -n '1p')"
+
+FOCUS_MIN="$(echo "$FOCUS_LINE" | sed -n 's/.*min=\(-*[0-9][0-9]*\).*/\1/p')"
+FOCUS_MAX="$(echo "$FOCUS_LINE" | sed -n 's/.*max=\(-*[0-9][0-9]*\).*/\1/p')"
+FOCUS_STEP="$(echo "$FOCUS_LINE" | sed -n 's/.*step=\([0-9][0-9]*\).*/\1/p')"
+FOCUS_DEFAULT="$(echo "$FOCUS_LINE" | sed -n 's/.*default=\(-*[0-9][0-9]*\).*/\1/p')"
+FOCUS_CURRENT="$(echo "$FOCUS_LINE" | sed -n 's/.*value=\(-*[0-9][0-9]*\).*/\1/p')"
+
+if [ -z "$FOCUS_LINE" ] || [ -z "$AUTO_LINE" ]; then
+	log '[FAIL] camera does not expose both focus_absolute and focus_auto controls'
+	exit 1
+fi
+if [ -z "$FOCUS_MIN" ] || [ -z "$FOCUS_MAX" ] || [ -z "$FOCUS_STEP" ] || \
+   [ "$FOCUS_STEP" -le 0 ] 2>/dev/null; then
+	log "[FAIL] cannot parse focus range from: $FOCUS_LINE"
+	exit 1
+fi
+
+log "[PASS] focus_absolute min=$FOCUS_MIN max=$FOCUS_MAX step=$FOCUS_STEP default=${FOCUS_DEFAULT:-unknown} current=${FOCUS_CURRENT:-unknown}"
+log "[PASS] focus_auto is supported: $AUTO_LINE"
+{
+	echo "FOCUS_MIN=$FOCUS_MIN"
+	echo "FOCUS_MAX=$FOCUS_MAX"
+	echo "FOCUS_STEP=$FOCUS_STEP"
+	echo "FOCUS_DEFAULT=${FOCUS_DEFAULT:-}"
+	echo "FOCUS_CURRENT=${FOCUS_CURRENT:-}"
+	echo "VIDEO_NODE=$VIDEO"
+} > "$CAPABILITIES_FILE.tmp" && mv "$CAPABILITIES_FILE.tmp" "$CAPABILITIES_FILE" || {
+	log "[FAIL] cannot save $CAPABILITIES_FILE"
+	exit 1
+}
+log "[PASS] focus capability data saved: $CAPABILITIES_FILE"
+log '[PASS] no photo was taken; camera power will now turn off.'
+power_camera_off
+log "CAPABILITIES=$CAPABILITIES_FILE"
+log "LOG=$PERSIST_DIR/camera-test0.log"

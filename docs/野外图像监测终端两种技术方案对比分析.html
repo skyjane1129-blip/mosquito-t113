@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"/>
+<title>野外图像监测终端两种技术方案对比分析</title>
+<style>
+@page { size: A4; margin: 2.2cm 2.0cm; }
+body { font-family: "Noto Sans CJK SC", "Microsoft YaHei", sans-serif; color: #222; font-size: 11pt; line-height: 1.65; }
+h1 { text-align: center; font-size: 22pt; margin: 2.2cm 0 0.5cm; color: #17365d; }
+.subtitle { text-align: center; font-size: 13pt; color: #555; margin-bottom: 1.5cm; }
+.meta { text-align: center; color: #666; margin-bottom: 2.5cm; }
+h2 { font-size: 16pt; color: #17365d; border-bottom: 1px solid #8ea9c1; padding-bottom: 5px; margin-top: 1.1em; }
+h3 { font-size: 13pt; color: #244f75; margin-top: 0.9em; }
+p { text-align: justify; margin: 0.45em 0; }
+table { width: 100%; table-layout: fixed; border-collapse: collapse; margin: 0.8em 0 1.2em; font-size: 9.5pt; }
+th, td { border: 1px solid #9aa8b5; padding: 6px; vertical-align: top; overflow-wrap: anywhere; }
+th:first-child, td:first-child { width: 21%; }
+th { background: #dce6f1; color: #17365d; text-align: center; }
+tr:nth-child(even) td { background: #f7f9fb; }
+ul, ol { margin-top: 0.4em; }
+li { margin: 0.3em 0; }
+.summary { background: #eef4f8; border-left: 5px solid #3d6f93; padding: 12px 16px; margin: 1em 0; }
+.note { background: #fff8e8; border: 1px solid #e5cc8c; padding: 10px 14px; margin: 1em 0; }
+.route { font-weight: bold; color: #17365d; }
+.footer { margin-top: 2em; color: #666; font-size: 9pt; border-top: 1px solid #bbb; padding-top: 8px; }
+</style>
+</head>
+<body>
+<h1>野外图像监测终端<br/>两种技术方案对比分析</h1>
+<div class="subtitle">MCU 专用控制方案与嵌入式 Linux 平台方案</div>
+<div class="meta">Mosquito 项目技术分析文档<br/>2026年8月18日</div>
+
+<div class="summary">
+<strong>核心结论：</strong>两种方案并不是同一路线上的简单高低配置，而是针对不同产品目标形成的两种技术架构。MCU方案强调任务专用、控制直接和系统精简；T113-S3 Linux方案强调平台能力、软件扩展和复杂业务承载。两种路线都能够完成野外拍照与蜂窝网络上传，最终选择应由图像质量、业务复杂度、开发周期、后期扩展及维护方式共同决定。
+</div>
+
+<h2>一、项目背景</h2>
+<p>两种方案面向的基本需求相近：设备部署在野外，按照预定策略完成图像采集，将照片及设备状态通过蜂窝网络发送到服务器，并支持电池供电、状态检测和后续业务扩展。</p>
+<p>目前对比的两种硬件组合如下：</p>
+<table>
+<tr><th>方案</th><th>主要器件</th><th>总体定位</th></tr>
+<tr><td>方案A：MCU专用控制路线</td><td>APM32F407VGT6、ML307R、SIM卡、SYX-500-TC FPC摄像头、TP4056</td><td>面向固定采集任务的专用嵌入式终端</td></tr>
+<tr><td>方案B（当前开发板）：嵌入式Linux平台路线</td><td>Allwinner T113-S3、Air780EG、SIM卡、USB UVC摄像头、BQ25895、EA3056、TF卡</td><td>面向高清采集和持续功能演进的嵌入式平台</td></tr>
+</table>
+<div class="note">说明：方案A的判断基于目前观察到的主要器件。SYX-500-TC摄像头的具体传感器、接口、分辨率，以及板上是否存在外部存储或扩展内存，仍需结合原理图和芯片丝印进一步确认。</div>
+
+<h2>二、两种技术路线</h2>
+<h3>2.1 方案A：MCU专用控制路线</h3>
+<p>该方案以 APM32F407VGT6 为主控制器。主控直接管理摄像头、通信模组、定时任务和外围电路，通常运行裸机程序或实时操作系统。ML307R承担移动网络接入及数据传输，TP4056负责单节锂电池充电。</p>
+<p class="route">其设计思想是：围绕既定任务构建一个紧凑、直接、可控的专用系统。</p>
+<p>典型工作流程为：系统等待任务触发，主控开启摄像头并采集图像，随后控制ML307R连接网络并发送数据，任务完成后回到等待状态。摄像头可能直接输出JPEG，也可能配合外部存储完成图像缓存。</p>
+
+<h3>2.2 方案B（当前开发板）：嵌入式Linux平台路线</h3>
+<p>该方案以双核 Cortex-A7 的 T113-S3 为主控制器，运行 Tina Linux。系统通过USB Host连接UVC摄像头，通过UART控制Air780EG，并利用TF卡提供系统存储、日志记录、照片缓存和离线补传空间。</p>
+<p class="route">其设计思想是：先建立一个完整的软件平台，再在平台上持续增加采集、联网、管理和算法功能。</p>
+<p>当前Mosquito项目已经完成Linux启动、3264×2448 MJPEG拍照、自动对焦与补光、本地顺序存储、UART ZMODEM传输，并已加入PPP、HTTP/HTTPS照片上传能力。</p>
+
+<h2>三、核心架构差异</h2>
+<table>
+<tr><th>对比维度</th><th>方案A：APM32F407＋ML307R</th><th>方案B（当前开发板）：T113-S3＋Air780EG</th></tr>
+<tr><td>主控类型</td><td>Cortex-M4F微控制器</td><td>双核Cortex-A7应用处理器</td></tr>
+<tr><td>软件形态</td><td>裸机程序或RTOS，功能围绕具体任务组织</td><td>嵌入式Linux，具有进程、驱动、文件系统和网络工具</td></tr>
+<tr><td>系统定位</td><td>专用设备</td><td>通用业务平台</td></tr>
+<tr><td>摄像头路线</td><td>FPC连接的嵌入式摄像头，可能采用DVP/DCI接口</td><td>标准USB UVC摄像头，驱动和调试接口标准化</td></tr>
+<tr><td>图像存储</td><td>取决于摄像头JPEG能力及板载外部存储</td><td>TF卡大容量保存，支持文件系统和离线队列</td></tr>
+<tr><td>蜂窝通信</td><td>ML307R配合SIM卡，由MCU通过AT指令控制</td><td>Air780EG配合SIM卡，通过AT诊断和UART PPP接入Linux网络栈</td></tr>
+<tr><td>开发方式</td><td>固件工程、外设驱动、状态机和RTOS任务</td><td>内核与设备树配置、Shell/C应用、标准网络工具</td></tr>
+<tr><td>启动特性</td><td>启动流程短，任务进入直接</td><td>需要完成Boot、内核和用户空间启动</td></tr>
+<tr><td>维护方式</td><td>固件升级和串口调试为主</td><td>支持日志、Shell、文件传输、脚本和应用升级</td></tr>
+<tr><td>板端轻量算法</td><td>可针对固定任务编写专用算法，需要结合片内存储及图像缓存条件设计</td><td>可直接部署基于大小、颜色和简单形态特征的蚊子卵识别程序</td></tr>
+</table>
+
+<h2>四、图像采集能力</h2>
+<h3>4.1 MCU方案的特点</h3>
+<p>APM32F407具有数字摄像头接口，适合连接嵌入式CMOS摄像头。该路线的数据链路短，主控能够直接控制摄像头寄存器、帧同步和采集时序。若摄像头能够输出JPEG，系统可以一边接收一边保存或发送。</p>
+<p>由于MCU片内存储资源有限，图像分辨率、缓存方式及上传流程通常需要在设计初期确定。如果需要更大的图像、更多本地照片或复杂图像处理，可能需要增加外部RAM、Flash或存储卡。</p>
+
+<h3>4.2 Linux方案的特点</h3>
+<p>T113-S3方案采用标准UVC/V4L2摄像头链路。当前摄像头能够输出3264×2448 MJPEG，并支持自动对焦、自动曝光、自动白平衡及白色补光。Linux系统可以直接把JPEG作为文件保存到TF卡，再进行校验、排队和上传。</p>
+<p>该路线更适合高清图像、大容量缓存和后续图像处理。摄像头更换时，只要新设备符合UVC标准，软件适配通常集中在格式、分辨率和控制参数层面。</p>
+
+<h3>4.3 当前开发板的蚊子卵识别能力</h3>
+<p>对于蚊子卵这类主要关注目标大小、颜色以及简单形态特征的识别任务，方案B（当前开发板）具备直接在板端部署算法的条件。该类任务不一定需要大型神经网络，也不依赖专用NPU，可以采用颜色空间转换、阈值分割、连通区域分析、面积范围筛选及长宽比等轻量图像处理方法。</p>
+<p>T113-S3可以在完成拍照后直接读取JPEG，对图像进行解码和按需缩放，在本地完成蚊子卵候选目标提取、数量统计、颜色分类和尺寸判断，再决定保存或上传哪些结果。算法可以使用C/C++交叉编译为板端程序，也可以根据最终软件配置引入轻量图像处理库。</p>
+<p>这种板端处理方式可以形成“拍照—本地分析—生成识别结果—选择性上传”的流程。服务器既可以接收原始照片，也可以只接收目标数量、尺寸区间、颜色类别、时间和位置等结构化数据。需要说明的是，当前开发板已经具备运行条件，但具体蚊子卵算法仍需根据实际样本、拍摄距离、光照和背景完成训练或参数标定。</p>
+
+<h2>五、通信与数据管理</h2>
+<p>两种方案均可借助蜂窝模组和SIM卡实现远程数据传输，但网络职责的分配方式不同。</p>
+<table>
+<tr><th>项目</th><th>MCU专用路线</th><th>Linux平台路线</th></tr>
+<tr><td>网络控制</td><td>MCU发送AT命令，使用模组内置协议或定制通信流程</td><td>Air780EG建立PPP链路，Linux直接使用标准IP网络</td></tr>
+<tr><td>应用协议</td><td>通常根据产品需求固定HTTP、MQTT或私有协议</td><td>可直接使用curl、TLS、HTTP/HTTPS及其他Linux网络组件</td></tr>
+<tr><td>本地缓存</td><td>依赖板载Flash、外部存储或专门设计的数据区</td><td>使用TF卡目录和文件系统，便于保存大量图片及日志</td></tr>
+<tr><td>断网补传</td><td>通过固件状态机实现</td><td>可以使用文件队列、脚本、数据库或后台服务实现</td></tr>
+<tr><td>现场诊断</td><td>串口日志和专用诊断命令</td><td>Shell、系统日志、网络工具、文件传输及板级诊断程序</td></tr>
+</table>
+
+<h2>六、软件开发与功能扩展</h2>
+<h3>6.1 MCU方案</h3>
+<ul>
+<li>程序结构紧凑，执行流程和资源使用容易控制。</li>
+<li>适合需求明确、工作模式稳定、功能边界清晰的产品。</li>
+<li>新增功能时需要评估Flash、RAM、任务调度及各外设之间的资源冲突。</li>
+<li>协议、文件管理和升级机制通常需要在固件内专门实现。</li>
+<li>适合形成高度定制化、批量一致的产品固件。</li>
+</ul>
+
+<h3>6.2 Linux方案</h3>
+<ul>
+<li>可以复用成熟驱动、网络库、加密库和系统工具。</li>
+<li>适合需求持续变化、需要现场诊断和远程维护的项目。</li>
+<li>方便增加温湿度、GNSS、电池状态、日志、离线队列和远程配置。</li>
+<li>为后续图像预处理、轻量算法和智能识别预留了更充足的平台空间。</li>
+<li>系统层次更多，需要同时维护启动链、内核、根文件系统和业务应用。</li>
+</ul>
+
+<h2>七、电源与工作模式</h2>
+<p>两种方案都可以通过“非工作时关闭摄像头和蜂窝模组、需要时再开启”的方式优化能源使用。区别主要在于系统的电源管理方法，而不应简单理解为某一颗主芯片决定整机表现。</p>
+<p>MCU路线便于把控制流程设计为等待、唤醒、采集、上传和再次等待；Linux路线则可以通过关闭外围、动态调频、CPU空闲、系统休眠或外部电源管理实现不同层次的优化。</p>
+<p>对于Mosquito项目，当前PCB可以先从软件层面完善外围关闭、CPUFreq、CPUIdle、RTC和suspend验证。如果未来需要更明确的定时断电工作模式，可在下一版PCB加入独立电源管家，使T113仅在执行任务时上电。</p>
+<div class="note">两种方案的整机能源表现均与拍摄次数、照片大小、蜂窝信号、联网时间、电源转换效率和软件策略密切相关。产品判断应以相同任务条件下的整机实测为准。</div>
+
+<h2>八、可靠性与维护</h2>
+<table>
+<tr><th>方面</th><th>MCU专用路线</th><th>Linux平台路线</th></tr>
+<tr><td>运行逻辑</td><td>状态数量较少，行为容易固定</td><td>系统能力丰富，可实施更完整的异常恢复策略</td></tr>
+<tr><td>数据安全</td><td>需要自行设计掉电保护和存储一致性</td><td>具备文件系统和同步机制，断电前需执行安全关机</td></tr>
+<tr><td>故障诊断</td><td>依赖预设日志、指示灯和调试接口</td><td>支持内核日志、应用日志、Shell和持久化报告</td></tr>
+<tr><td>看门狗</td><td>可直接使用MCU内部或外部看门狗</td><td>可采用Linux看门狗，并可配合外部电源管家</td></tr>
+<tr><td>升级</td><td>适合完整固件升级或双分区升级设计</td><td>可分别升级应用、配置和系统镜像</td></tr>
+</table>
+
+<h2>九、适用场景</h2>
+<h3>9.1 更适合MCU专用路线的情况</h3>
+<ul>
+<li>产品需求已经稳定，采集和上传流程比较固定。</li>
+<li>使用固定型号的FPC摄像头和固定图像参数。</li>
+<li>本地不需要保存大量照片。</li>
+<li>服务器协议明确，后续功能变化较少。</li>
+<li>希望形成高度专用的一体化终端。</li>
+</ul>
+
+<h3>9.2 更适合Linux平台路线的情况</h3>
+<ul>
+<li>需要高清图像、自动对焦和较大的本地照片缓存。</li>
+<li>需要断网缓存、失败重试、日志追踪和远程诊断。</li>
+<li>需要持续增加GNSS、温湿度、电池状态及其他传感器。</li>
+<li>后续可能加入图像筛选、识别或更复杂的业务逻辑。</li>
+<li>希望使用标准网络库、文件系统和Linux开发生态。</li>
+</ul>
+
+<h2>十、综合结论</h2>
+<p>方案A与方案B（当前开发板）服务于相近的产品需求，但代表两种不同的工程路线：</p>
+<ul>
+<li><strong>方案A是任务导向的专用控制方案：</strong>系统紧凑，软硬件围绕既定工作流程协同设计。</li>
+<li><strong>方案B（当前开发板）是能力导向的平台化方案：</strong>以Linux、标准摄像头接口、大容量存储、板端轻量识别和标准网络能力支撑持续演进。</li>
+</ul>
+<p>因此，对两种方案的评价不宜只看单一芯片参数，也不宜简单归纳为性能或功耗上的优劣。MCU方案适合功能边界清晰的专用终端；T113-S3方案更适合高清图像、复杂联网、本地数据管理以及后续智能化扩展。</p>
+<p>对于当前Mosquito项目，继续采用T113-S3路线具有明确的连续性：已有Linux启动、USB高清拍照、TF卡存储、串口传输和4G上传基础。后续可以通过软件电源管理及可选的独立电源管家完善工作模式，在保留平台能力的同时满足野外部署要求。</p>
+
+<div class="footer">本文件用于技术路线分析。方案A的最终判断应在取得完整原理图、摄像头规格及实测数据后更新。</div>
+</body>
+</html>

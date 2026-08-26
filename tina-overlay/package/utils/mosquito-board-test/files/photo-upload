@@ -1,0 +1,136 @@
+#!/bin/sh
+
+PERSIST_DIR=/overlay/mosquito-test
+CAPTURE_DIR=/mnt/UDISK/mosquito-test/camera
+LOG=/tmp/mosquito-photo-upload.log
+SYSTEM_CA=/etc/ssl/certs/ca-certificates.crt
+EXTRA_CA=/etc/ssl/certs/ISRG_Root_X1.crt
+UPLOAD_CA=/tmp/mosquito-upload-ca-bundle.crt
+CA_ARGS=
+URL="$1"
+PHOTO="$2"
+
+usage()
+{
+	echo "Usage: photo-upload URL [JPEG]" >&2
+	echo 'If JPEG is omitted, camera-test captures a new photo first.' >&2
+}
+
+prepare_tls()
+{
+	case "$URL" in
+	https://*) ;;
+	*) return 0 ;;
+	esac
+	YEAR="$(date +%Y 2>/dev/null)"
+	case "$YEAR" in
+		''|*[!0-9]*) echo '[FAIL] cannot determine system year for TLS validation' >&2; return 1 ;;
+	esac
+	if [ "$YEAR" -lt 2024 ]; then
+		echo "[FAIL] system clock is not valid for TLS (year=$YEAR); run 4g-start or set the time" >&2
+		return 1
+	fi
+	if [ ! -s "$SYSTEM_CA" ] || [ ! -s "$EXTRA_CA" ]; then
+		echo '[FAIL] system or Mosquito supplemental CA certificate is missing' >&2
+		return 1
+	fi
+	cat "$SYSTEM_CA" "$EXTRA_CA" > "$UPLOAD_CA.tmp" && mv "$UPLOAD_CA.tmp" "$UPLOAD_CA" || return 1
+	CA_ARGS="--cacert $UPLOAD_CA"
+	WAIT=0
+	RANDOM_READY=0
+	while [ "$WAIT" -lt 600 ]; do
+		ENTROPY="$(cat /proc/sys/kernel/random/entropy_avail 2>/dev/null)"
+		case "$ENTROPY" in ''|*[!0-9]*) ENTROPY=0 ;; esac
+		if dmesg 2>/dev/null | grep -q 'random: crng init done'; then
+			RANDOM_READY=1
+			break
+		fi
+		if [ "$WAIT" -eq 0 ] || [ $((WAIT % 30)) -eq 0 ]; then
+			echo "[INFO] waiting for kernel random generator before TLS (entropy=$ENTROPY)"
+		fi
+		sleep 1
+		WAIT=$((WAIT + 1))
+	done
+	if [ "$RANDOM_READY" -ne 1 ]; then
+		echo "[FAIL] kernel random pool is not ready for TLS (entropy=$ENTROPY)" >&2
+		return 1
+	fi
+	mkdir -p /overlay
+	dd if=/dev/urandom of=/overlay/mosquito-random-seed.tmp bs=64 count=1 2>/dev/null && \
+		mv /overlay/mosquito-random-seed.tmp /overlay/mosquito-random-seed
+}
+
+if [ -z "$URL" ]; then
+	usage
+	exit 2
+fi
+case "$URL" in
+	http://*|https://*) ;;
+	*) echo '[FAIL] upload URL must start with http:// or https://' >&2; exit 2 ;;
+esac
+if ! command -v curl >/dev/null 2>&1; then
+	echo '[FAIL] curl is not installed' >&2
+	exit 1
+fi
+if ! ip link show ppp0 >/dev/null 2>&1; then
+	echo '[FAIL] ppp0 is not up; run 4g-start first' >&2
+	exit 1
+fi
+if ! prepare_tls; then
+	exit 1
+fi
+
+if [ -z "$PHOTO" ]; then
+	if ! camera-test; then
+		echo '[FAIL] camera-test failed; no upload attempted' >&2
+		exit 1
+	fi
+	PHOTO="$(ls -t "$CAPTURE_DIR"/*.jpg 2>/dev/null | sed -n '1p')"
+fi
+if [ ! -f "$PHOTO" ] || [ ! -s "$PHOTO" ]; then
+	echo "[FAIL] JPEG does not exist or is empty: $PHOTO" >&2
+	exit 1
+fi
+
+mkdir -p "$PERSIST_DIR"
+: > "$LOG"
+NAME="$(basename "$PHOTO")"
+BYTES="$(wc -c < "$PHOTO" | tr -d ' ')"
+HASH="$(sha256sum "$PHOTO" 2>/dev/null | awk '{print $1}')"
+echo "[INFO] uploading $PHOTO ($BYTES bytes) over ppp0"
+[ -n "$HASH" ] && echo "[INFO] SHA-256: $HASH"
+
+INSECURE=
+if [ "${MOSQUITO_CURL_INSECURE:-0}" = 1 ]; then
+	echo '[WARN] TLS certificate verification disabled for this test upload'
+	INSECURE=-k
+fi
+
+HTTP_CODE="$(curl $INSECURE --http1.1 --interface ppp0 \
+	$CA_ARGS \
+	--fail --show-error --silent \
+	--connect-timeout 30 --max-time 900 \
+	--retry 2 --retry-delay 5 \
+	-H 'Content-Type: image/jpeg' \
+	-H "X-Device-ID: mosquito-t113" \
+	-H "X-File-Name: $NAME" \
+	-H "X-Content-SHA256: $HASH" \
+	--data-binary "@$PHOTO" \
+	-o "$LOG.response" -w '%{http_code}' "$URL" 2>>"$LOG")"
+STATUS=$?
+if [ "$STATUS" -ne 0 ]; then
+	echo "[FAIL] curl upload failed with status $STATUS" >&2
+	cat "$LOG" >&2
+	exit "$STATUS"
+fi
+
+{
+	echo "photo=$PHOTO"
+	echo "bytes=$BYTES"
+	echo "sha256=$HASH"
+	echo "url=$URL"
+	echo "http_code=$HTTP_CODE"
+} >> "$LOG"
+cp "$LOG" "$PERSIST_DIR/photo-upload.log" 2>/dev/null
+echo "[PASS] upload completed; server returned HTTP $HTTP_CODE"
+echo "[INFO] report: $PERSIST_DIR/photo-upload.log"

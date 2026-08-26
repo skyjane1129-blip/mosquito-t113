@@ -1,0 +1,27 @@
+#!/bin/sh
+
+if [ "$#" -gt 1 ]; then
+	echo 'Usage: camera-test1 [FOCUS_ABSOLUTE]' >&2
+	exit 2
+fi
+
+FOCUS="${1:-}"
+
+if [ -z "$FOCUS" ]; then
+	echo '[INFO] autofocus-lock test: calculate a 5-sample median, lock and verify it, skip 120 frames, then capture'
+	MOSQUITO_FOCUS_STABLE_LOCK=1 exec camera-test
+fi
+
+case "$FOCUS" in
+	-*) FOCUS_DIGITS="${FOCUS#-}" ;;
+	*) FOCUS_DIGITS="$FOCUS" ;;
+esac
+case "$FOCUS_DIGITS" in
+	''|*[!0-9]*)
+		echo "[FAIL] FOCUS_ABSOLUTE must be an integer: $FOCUS" >&2
+		exit 2
+		;;
+esac
+
+echo "[INFO] fixed-focus test: focus_absolute=$FOCUS; all other capture settings are provided by camera-test"
+MOSQUITO_FOCUS_ABSOLUTE="$FOCUS" exec camera-test

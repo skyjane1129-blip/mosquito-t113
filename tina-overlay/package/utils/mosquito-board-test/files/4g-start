@@ -1,0 +1,216 @@
+#!/bin/sh
+
+CONF=/etc/mosquito/4g.conf
+CHAT_FILE=/tmp/air780eg.chat
+PPP_LOG=/tmp/mosquito-4g-ppp.log
+PID_FILE=/var/run/ppp-air780eg.pid
+LOCK_DIR=/var/run/mosquito-air780eg-start.lock
+DNS_AUTO=/tmp/resolv.conf.auto
+DNS_PPP=/tmp/resolv.conf.ppp
+RANDOM_SEED=/overlay/mosquito-random-seed
+APN=
+
+cleanup()
+{
+	rm -f "$LOCK_DIR/pid" 2>/dev/null
+	rmdir "$LOCK_DIR" 2>/dev/null
+}
+
+fail()
+{
+	echo "[FAIL] $*" >&2
+	exit 1
+}
+
+load_ppp_support()
+{
+	for MODULE in crc-ccitt slhc ppp_generic ppp_async; do
+		MODULE_PROC="$MODULE"
+		[ "$MODULE" = crc-ccitt ] && MODULE_PROC=crc_ccitt
+		grep -q "^$MODULE_PROC " /proc/modules && continue
+		if ! modprobe "$MODULE" >/dev/null 2>&1; then
+			fail "cannot load PPP kernel module: $MODULE"
+		fi
+	done
+	if [ ! -c /dev/ppp ]; then
+		mknod /dev/ppp c 108 0 2>/dev/null || fail 'cannot create /dev/ppp (c 108 0)'
+	fi
+	chmod 600 /dev/ppp || fail 'cannot set /dev/ppp permissions'
+}
+
+install_dns_entry()
+{
+	[ -r "$DNS_PPP" ] && cp "$DNS_PPP" "$DNS_AUTO"
+	[ -s "$DNS_AUTO" ] || return 1
+	if [ -e /etc/resolv.conf ] && [ ! -L /etc/resolv.conf ]; then
+		echo '[WARN] /etc/resolv.conf is a regular file; leaving it unchanged' >&2
+	else
+		ln -sf "$DNS_AUTO" /etc/resolv.conf || return 1
+	fi
+	return 0
+}
+
+sync_clock()
+{
+	command -v ntpd >/dev/null 2>&1 || return 1
+	: > /tmp/mosquito-ntp.log
+	ntpd -n -q -p ntp.aliyun.com -p 0.openwrt.pool.ntp.org \
+		>/tmp/mosquito-ntp.log 2>&1 &
+	NTP_PID=$!
+	NTP_WAIT=0
+	while kill -0 "$NTP_PID" 2>/dev/null && [ "$NTP_WAIT" -lt 30 ]; do
+		sleep 1
+		NTP_WAIT=$((NTP_WAIT + 1))
+	done
+	if kill -0 "$NTP_PID" 2>/dev/null; then
+		kill -TERM "$NTP_PID" 2>/dev/null
+		wait "$NTP_PID" 2>/dev/null
+		return 1
+	fi
+	wait "$NTP_PID"
+}
+
+restore_random_seed()
+{
+	if [ -r "$RANDOM_SEED" ]; then
+		dd if="$RANDOM_SEED" of=/dev/urandom bs=64 count=1 2>/dev/null
+	fi
+}
+
+[ -r "$CONF" ] && . "$CONF"
+[ -n "$1" ] && APN="$1"
+[ -n "$APN" ] || APN=3gnet
+
+case "$APN" in
+	*[!A-Za-z0-9._-]*)
+		echo "[FAIL] invalid APN: $APN" >&2
+		exit 2
+		;;
+esac
+
+mkdir -p /var/run || fail 'cannot create runtime directory: /var/run'
+
+for COMMAND in air-test pppd chat modprobe mknod; do
+	if ! command -v "$COMMAND" >/dev/null 2>&1; then
+		echo "[FAIL] missing required command: $COMMAND" >&2
+		exit 1
+	fi
+done
+
+if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+	LOCK_PID="$(cat "$LOCK_DIR/pid" 2>/dev/null)"
+	if [ -n "$LOCK_PID" ] && kill -0 "$LOCK_PID" 2>/dev/null; then
+		fail "another 4g-start operation is already running as PID $LOCK_PID"
+	fi
+	rm -f "$LOCK_DIR/pid" 2>/dev/null
+	rmdir "$LOCK_DIR" 2>/dev/null
+	mkdir "$LOCK_DIR" 2>/dev/null || fail 'cannot recover the stale 4g-start lock'
+fi
+echo $$ > "$LOCK_DIR/pid"
+MOSQUITO_AIR_UART_OWNER=$$
+export MOSQUITO_AIR_UART_OWNER
+trap cleanup 0
+trap 'exit 129' 1
+trap 'exit 130' 2
+trap 'exit 143' 15
+
+restore_random_seed
+load_ppp_support
+
+if ip link show ppp0 >/dev/null 2>&1; then
+	echo '[PASS] ppp0 is already up'
+	ip addr show ppp0
+	install_dns_entry && echo '[PASS] PPP DNS entry is ready'
+	YEAR="$(date +%Y 2>/dev/null)"
+	case "$YEAR" in ''|*[!0-9]*) YEAR=0 ;; esac
+	if [ "$YEAR" -lt 2024 ]; then
+		sync_clock && echo "[PASS] network time synchronized: $(date)"
+	fi
+	exit 0
+fi
+if [ -r "$PID_FILE" ]; then
+	OLD_PID="$(sed -n '1p' "$PID_FILE" 2>/dev/null)"
+	if [ -n "$OLD_PID" ] && kill -0 "$OLD_PID" 2>/dev/null; then
+		echo "[INFO] pppd is already running as PID $OLD_PID; waiting for ppp0"
+	else
+		rm -f "$PID_FILE"
+	fi
+fi
+
+if [ -r "$PID_FILE" ]; then
+	echo '[INFO] pppd is already starting; skipping UART diagnostics'
+else
+
+REGISTERED=0
+ATTEMPT=1
+while [ "$ATTEMPT" -le 13 ]; do
+	echo "[INFO] network registration check $ATTEMPT/13"
+	if air-test >/tmp/mosquito-4g-air-test.out 2>&1 && \
+	   grep -q '^\[PASS\] LTE-network.*registered on a network' /tmp/mosquito-4g-air-test.out; then
+		REGISTERED=1
+		cat /tmp/mosquito-4g-air-test.out
+		break
+	fi
+	if [ "$ATTEMPT" -eq 1 ]; then
+		cat /tmp/mosquito-4g-air-test.out
+	else
+		grep 'LTE-register\|LTE-network' /tmp/mosquito-4g-air-test.out 2>/dev/null
+	fi
+	ATTEMPT=$((ATTEMPT + 1))
+	[ "$ATTEMPT" -le 13 ] && sleep 15
+done
+if [ "$REGISTERED" -ne 1 ]; then
+	echo '[FAIL] LTE did not register within about 3 minutes; PPP was not started' >&2
+	exit 1
+fi
+
+fi
+
+cat > "$CHAT_FILE" <<EOF
+ABORT 'BUSY'
+ABORT 'NO CARRIER'
+ABORT 'NO DIALTONE'
+ABORT 'ERROR'
+TIMEOUT 15
+'' AT
+OK ATE0
+OK AT+CPIN?
+READY AT+CGDCONT=1,"IP","$APN"
+OK ATD*99***1#
+TIMEOUT 60
+CONNECT ''
+EOF
+chmod 600 "$CHAT_FILE"
+
+: > "$PPP_LOG"
+if [ ! -r "$PID_FILE" ]; then
+	echo "[INFO] starting PPP on /dev/ttyS1 with APN $APN"
+	pppd call air780eg connect "/usr/sbin/chat -V -s -f $CHAT_FILE" \
+		logfile "$PPP_LOG"
+fi
+
+WAIT=0
+while [ "$WAIT" -lt 90 ]; do
+	if ip link show ppp0 >/dev/null 2>&1; then
+		echo '[PASS] Air780EG PPP data connection is up'
+		ip addr show ppp0
+		ip route
+		if install_dns_entry; then
+			echo '[PASS] PPP DNS installed through /etc/resolv.conf'
+		else
+			echo '[WARN] PPP is up but DNS configuration is unavailable' >&2
+		fi
+		if sync_clock; then
+			echo "[PASS] network time synchronized: $(date)"
+		else
+			echo '[WARN] automatic NTP synchronization failed; inspect /tmp/mosquito-ntp.log' >&2
+		fi
+		exit 0
+	fi
+	sleep 2
+	WAIT=$((WAIT + 2))
+done
+
+echo "[FAIL] ppp0 did not appear; inspect $PPP_LOG and logread" >&2
+cat "$PPP_LOG" 2>/dev/null
+exit 1

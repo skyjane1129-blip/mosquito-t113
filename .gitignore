@@ -6,6 +6,7 @@
 /tina-t113/
 
 # Build outputs and binaries
+/build/
 /apps/hello-t113/hello-t113
 /releases/**/*.img
 *.o

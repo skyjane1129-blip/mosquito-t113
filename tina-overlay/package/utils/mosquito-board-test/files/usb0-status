@@ -13,20 +13,22 @@ log()
 	echo "$*" >> "$TMP_LOG"
 }
 
-log 'Mosquito T113-S3 USB0/ADB status (dev-v2 manual mode)'
+log 'Mosquito T113-S3 USB0/ADB status (dev-v5.6.2 adb-on validated)'
 log 'USB0 is device-only; UART0 remains available as the recovery console.'
 
-AUTO_LINK="$(find /etc/rc.d -maxdepth 1 -type l -name 'S*adbd' 2>/dev/null | sed -n '1p')"
-if [ -z "$AUTO_LINK" ] && ! grep -qx 'adbd' /etc/init.d/load_script.conf 2>/dev/null; then
-	log '[PASS] early-boot ADB is disabled'
+AUTO_LINK="$(find /etc/rc.d -maxdepth 1 -type l \( -name 'S*adbd' -o -name 'S*mosquito-usb0*' \) 2>/dev/null | sed -n '1p')"
+if [ -z "$AUTO_LINK" ] && \
+	! grep -Eq '^(adbd|mosquito-usb0-autostart)$' /etc/init.d/load_script.conf 2>/dev/null && \
+	! grep -q 'mosquito-usb0-autostart' /etc/init.d/rc.preboot 2>/dev/null; then
+	log '[PASS] ADB automatic startup is disabled; use the UART command: adb-on'
 else
-	log "[WARN] an ADB auto-start entry still exists: ${AUTO_LINK:-load_script.conf}"
+	log "[FAIL] an ADB automatic startup entry still exists: ${AUTO_LINK:-init configuration}"
 fi
 
 if pidof adbd >/dev/null 2>&1; then
 	log '[PASS] adbd process is running as root without authentication'
 else
-	log '[INFO] adbd is stopped; run: usb0-adb-start prepare'
+	log '[INFO] adbd is stopped; run: adb-on'
 fi
 
 if grep -q ' /dev/usb-ffs/adb functionfs ' /proc/mounts; then

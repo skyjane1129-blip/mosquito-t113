@@ -4,8 +4,32 @@ TMP_LOG=/tmp/mosquito-camera-test.log
 PERSIST_DIR=/overlay/mosquito-test
 CAPTURE_DIR=/mnt/UDISK/mosquito-test/camera
 SEQUENCE_FILE=$CAPTURE_DIR/.next-photo-number
+MIN_FREE_KB=10240
 GPIO_OFFSET=128
+LOCK_DIR=/var/run/mosquito-camera.lock
+CAPABILITIES_FILE=/overlay/mosquito-test/camera-focus-capabilities.conf
 CAM_GPIO=
+PREVIEW_PID=
+LOCK_HELD=0
+FOCUS_MIN=
+FOCUS_MAX=
+FOCUS_STEP=
+FOCUS_DEFAULT=
+FOCUS_SAMPLES=
+FOCUS_SAMPLE_ATTEMPTS=0
+FOCUS_VALID_SAMPLE_COUNT=0
+FOCUS_WINDOW_COUNT=0
+FOCUS_WINDOW_MIN=
+FOCUS_WINDOW_MAX=
+FOCUS_WINDOW_MEDIAN=
+FOCUS_WINDOW_SPREAD=
+FOCUS_TOLERANCE=
+FOCUS_REQUESTED=
+FOCUS_LOCK_READBACK=
+FOCUS_LOCK_CONFIRMED=not-applicable
+PREVIEW_WARMUP_SECONDS=0
+FOCUS_SAMPLE_INTERVAL_SECONDS=0
+FOCUS_SAMPLE_LIMIT=0
 
 mkdir -p "$PERSIST_DIR"
 : > "$TMP_LOG"
@@ -16,10 +40,30 @@ log()
 	echo "$*" >> "$TMP_LOG"
 }
 
-finish()
+power_camera_off()
 {
 	if [ -n "$CAM_GPIO" ] && [ -e "/sys/class/gpio/gpio$CAM_GPIO/direction" ]; then
+		# Let previously queued serial text drain before the kernel reports USB removal.
+		sleep 1
 		echo low > "/sys/class/gpio/gpio$CAM_GPIO/direction" 2>/dev/null
+		# Keep the shell prompt and final copyable paths behind the disconnect report.
+		sleep 2
+		CAM_GPIO=
+	fi
+}
+
+finish()
+{
+	if [ -n "$PREVIEW_PID" ]; then
+		kill "$PREVIEW_PID" 2>/dev/null
+		wait "$PREVIEW_PID" 2>/dev/null
+		PREVIEW_PID=
+	fi
+	power_camera_off
+	if [ "$LOCK_HELD" -eq 1 ]; then
+		rm -f "$LOCK_DIR/pid" 2>/dev/null
+		rmdir "$LOCK_DIR" 2>/dev/null
+		LOCK_HELD=0
 	fi
 	cp "$TMP_LOG" "$PERSIST_DIR/camera-test.log" 2>/dev/null
 }
@@ -30,6 +74,23 @@ trap 'exit 143' 15
 
 log 'Mosquito T113-S3 one-command high-resolution camera capture'
 log 'Policy: enable PE0/CAM_EN, capture one 3264x2448 MJPEG frame, sync it, then remove camera power.'
+
+mkdir -p /var/run
+if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+	LOCK_PID="$(cat "$LOCK_DIR/pid" 2>/dev/null)"
+	if [ -n "$LOCK_PID" ] && kill -0 "$LOCK_PID" 2>/dev/null; then
+		log "[FAIL] camera is busy in PID $LOCK_PID"
+		exit 1
+	fi
+	rm -f "$LOCK_DIR/pid" 2>/dev/null
+	rmdir "$LOCK_DIR" 2>/dev/null
+	mkdir "$LOCK_DIR" 2>/dev/null || {
+		log '[FAIL] cannot acquire camera lock'
+		exit 1
+	}
+fi
+echo $$ > "$LOCK_DIR/pid"
+LOCK_HELD=1
 
 BASE=
 BEST_NGPIO=0
@@ -83,12 +144,38 @@ log "[PASS] UVC video node appeared: $VIDEO"
 log '[INFO] Camera capabilities:'
 v4l2-ctl -d "$VIDEO" --all >> "$TMP_LOG" 2>&1
 v4l2-ctl -d "$VIDEO" --list-formats-ext >> "$TMP_LOG" 2>&1
+FOCUS_CTRL_LINE="$(v4l2-ctl -d "$VIDEO" --list-ctrls 2>> "$TMP_LOG" | sed -n '/^[[:space:]]*focus_absolute[[:space:]]/p' | sed -n '1p')"
+FOCUS_MIN="$(echo "$FOCUS_CTRL_LINE" | sed -n 's/.*min=\(-*[0-9][0-9]*\).*/\1/p')"
+FOCUS_MAX="$(echo "$FOCUS_CTRL_LINE" | sed -n 's/.*max=\(-*[0-9][0-9]*\).*/\1/p')"
+FOCUS_STEP="$(echo "$FOCUS_CTRL_LINE" | sed -n 's/.*step=\([0-9][0-9]*\).*/\1/p')"
+FOCUS_DEFAULT="$(echo "$FOCUS_CTRL_LINE" | sed -n 's/.*default=\(-*[0-9][0-9]*\).*/\1/p')"
+if [ -n "$FOCUS_MIN" ] && [ -n "$FOCUS_MAX" ] && [ -n "$FOCUS_STEP" ] && \
+   [ "$FOCUS_STEP" -gt 0 ] 2>/dev/null; then
+		log "[PASS] focus range: min=$FOCUS_MIN max=$FOCUS_MAX step=$FOCUS_STEP default=${FOCUS_DEFAULT:-unknown}"
+		{
+			echo "FOCUS_MIN=$FOCUS_MIN"
+			echo "FOCUS_MAX=$FOCUS_MAX"
+			echo "FOCUS_STEP=$FOCUS_STEP"
+			echo "FOCUS_DEFAULT=${FOCUS_DEFAULT:-}"
+		} > "$CAPABILITIES_FILE.tmp" && mv "$CAPABILITIES_FILE.tmp" "$CAPABILITIES_FILE"
+	else
+		FOCUS_MIN=
+		FOCUS_MAX=
+		FOCUS_STEP=
+		log '[WARN] camera did not report a parseable focus_absolute range'
+	fi
 
 if ! grep -q ' /mnt/UDISK ' /proc/mounts; then
 	log '[FAIL] /mnt/UDISK is not mounted; refusing to lose the captured photo after reboot'
 	exit 1
 fi
 mkdir -p "$CAPTURE_DIR"
+FREE_KB="$(df -k "$CAPTURE_DIR" 2>/dev/null | awk 'NR == 2 {print $4}')"
+case "$FREE_KB" in ''|*[!0-9]*) FREE_KB=0 ;; esac
+if [ "$FREE_KB" -lt "$MIN_FREE_KB" ]; then
+	log "[FAIL] less than ${MIN_FREE_KB} KiB is free on /mnt/UDISK; refusing to capture"
+	exit 1
+fi
 
 set_optional_control()
 {
@@ -101,10 +188,144 @@ set_optional_control()
 	fi
 }
 
+get_control_value()
+{
+	GET_CONTROL_NAME="$1"
+	v4l2-ctl -d "$VIDEO" --get-ctrl="$GET_CONTROL_NAME" 2>> "$TMP_LOG" |
+		sed -n 's/.*:[[:space:]]*\(-*[0-9][0-9]*\).*/\1/p' |
+		sed -n '1p'
+}
+
+focus_value_is_valid()
+{
+	CHECK_FOCUS_VALUE="$1"
+	CHECK_FOCUS_DIGITS="$CHECK_FOCUS_VALUE"
+	case "$CHECK_FOCUS_DIGITS" in -*) CHECK_FOCUS_DIGITS="${CHECK_FOCUS_DIGITS#-}" ;; esac
+	case "$CHECK_FOCUS_DIGITS" in ''|*[!0-9]*) return 1 ;; esac
+	[ -n "$FOCUS_MIN" ] && [ -n "$FOCUS_MAX" ] && [ -n "$FOCUS_STEP" ] || return 1
+	[ "$FOCUS_STEP" -gt 0 ] 2>/dev/null || return 1
+	[ "$CHECK_FOCUS_VALUE" -ge "$FOCUS_MIN" ] && \
+		[ "$CHECK_FOCUS_VALUE" -le "$FOCUS_MAX" ] || return 1
+	CHECK_FOCUS_OFFSET=$((CHECK_FOCUS_VALUE - FOCUS_MIN))
+	[ $((CHECK_FOCUS_OFFSET % FOCUS_STEP)) -eq 0 ] || return 1
+	return 0
+}
+
+confirm_focus_value()
+{
+	CONFIRM_FOCUS_TARGET="$1"
+	CONFIRM_FOCUS_ATTEMPT=1
+	FOCUS_LOCK_READBACK=
+	while [ "$CONFIRM_FOCUS_ATTEMPT" -le 3 ]; do
+		sleep 1
+		FOCUS_LOCK_READBACK="$(get_control_value focus_absolute)"
+		if focus_value_is_valid "$FOCUS_LOCK_READBACK" && \
+		   [ "$FOCUS_LOCK_READBACK" -eq "$CONFIRM_FOCUS_TARGET" ]; then
+			FOCUS_LOCK_CONFIRMED=yes
+			log "[PASS] focus readback confirmed at $FOCUS_LOCK_READBACK"
+			return 0
+		fi
+		log "[WARN] focus readback attempt $CONFIRM_FOCUS_ATTEMPT/3: requested=$CONFIRM_FOCUS_TARGET actual=${FOCUS_LOCK_READBACK:-invalid}"
+		CONFIRM_FOCUS_ATTEMPT=$((CONFIRM_FOCUS_ATTEMPT + 1))
+	done
+	FOCUS_LOCK_CONFIRMED=no
+	return 1
+}
+
+focus_window_stats()
+{
+	FOCUS_WINDOW_COUNT=$#
+	FOCUS_WINDOW_MIN=
+	FOCUS_WINDOW_MAX=
+	FOCUS_WINDOW_MEDIAN=
+	FOCUS_WINDOW_SPREAD=
+	[ "$FOCUS_WINDOW_COUNT" -gt 0 ] || return 1
+
+	for STATS_VALUE in "$@"; do
+		focus_value_is_valid "$STATS_VALUE" || return 1
+		if [ -z "$FOCUS_WINDOW_MIN" ] || [ "$STATS_VALUE" -lt "$FOCUS_WINDOW_MIN" ]; then
+			FOCUS_WINDOW_MIN="$STATS_VALUE"
+		fi
+		if [ -z "$FOCUS_WINDOW_MAX" ] || [ "$STATS_VALUE" -gt "$FOCUS_WINDOW_MAX" ]; then
+			FOCUS_WINDOW_MAX="$STATS_VALUE"
+		fi
+	done
+
+	MEDIAN_INDEX=$(((FOCUS_WINDOW_COUNT + 1) / 2))
+	for MEDIAN_CANDIDATE in "$@"; do
+		MEDIAN_LESS=0
+		MEDIAN_LESS_OR_EQUAL=0
+		for MEDIAN_OTHER in "$@"; do
+			[ "$MEDIAN_OTHER" -lt "$MEDIAN_CANDIDATE" ] && \
+				MEDIAN_LESS=$((MEDIAN_LESS + 1))
+			[ "$MEDIAN_OTHER" -le "$MEDIAN_CANDIDATE" ] && \
+				MEDIAN_LESS_OR_EQUAL=$((MEDIAN_LESS_OR_EQUAL + 1))
+		done
+		if [ "$MEDIAN_LESS" -lt "$MEDIAN_INDEX" ] && \
+		   [ "$MEDIAN_LESS_OR_EQUAL" -ge "$MEDIAN_INDEX" ]; then
+			FOCUS_WINDOW_MEDIAN="$MEDIAN_CANDIDATE"
+			break
+		fi
+	done
+	[ -n "$FOCUS_WINDOW_MEDIAN" ] || return 1
+	FOCUS_WINDOW_SPREAD=$((FOCUS_WINDOW_MAX - FOCUS_WINDOW_MIN))
+	return 0
+}
+
 set_optional_control exposure_auto 3
 set_optional_control exposure_auto_priority 0
 set_optional_control white_balance_temperature_auto 1
-set_optional_control focus_auto 1
+if [ "${MOSQUITO_FOCUS_STABLE_LOCK:-0}" = 1 ]; then
+	if ! v4l2-ctl -d "$VIDEO" --set-ctrl=focus_auto=1 >> "$TMP_LOG" 2>&1; then
+		log '[FAIL] camera rejected required control focus_auto=1'
+		exit 1
+	fi
+	log '[PASS] camera control focus_auto=1'
+elif [ -n "${MOSQUITO_FOCUS_ABSOLUTE:-}" ]; then
+	FOCUS_DIGITS="$MOSQUITO_FOCUS_ABSOLUTE"
+	case "$FOCUS_DIGITS" in -*) FOCUS_DIGITS="${FOCUS_DIGITS#-}" ;; esac
+	case "$FOCUS_DIGITS" in
+		''|*[!0-9]*)
+			log "[FAIL] invalid manual focus value: $MOSQUITO_FOCUS_ABSOLUTE"
+			exit 2
+			;;
+	esac
+	if [ -z "$FOCUS_MIN" ] || [ -z "$FOCUS_MAX" ] || [ -z "$FOCUS_STEP" ]; then
+		log '[FAIL] cannot validate manual focus because min/max/step are unavailable; run camera-test0'
+		exit 1
+	fi
+	if [ "$MOSQUITO_FOCUS_ABSOLUTE" -lt "$FOCUS_MIN" ] || \
+	   [ "$MOSQUITO_FOCUS_ABSOLUTE" -gt "$FOCUS_MAX" ]; then
+		log "[FAIL] manual focus $MOSQUITO_FOCUS_ABSOLUTE is outside $FOCUS_MIN..$FOCUS_MAX (step=$FOCUS_STEP)"
+		exit 2
+	fi
+	FOCUS_OFFSET=$((MOSQUITO_FOCUS_ABSOLUTE - FOCUS_MIN))
+	if [ $((FOCUS_OFFSET % FOCUS_STEP)) -ne 0 ]; then
+		FOCUS_LOWER=$((FOCUS_MIN + (FOCUS_OFFSET / FOCUS_STEP) * FOCUS_STEP))
+		FOCUS_UPPER=$((FOCUS_LOWER + FOCUS_STEP))
+		[ "$FOCUS_UPPER" -gt "$FOCUS_MAX" ] && FOCUS_UPPER="$FOCUS_MAX"
+		log "[FAIL] manual focus $MOSQUITO_FOCUS_ABSOLUTE does not match step=$FOCUS_STEP; nearest valid values: $FOCUS_LOWER, $FOCUS_UPPER"
+		exit 2
+	fi
+	if ! v4l2-ctl -d "$VIDEO" --set-ctrl=focus_auto=0 >> "$TMP_LOG" 2>&1; then
+		log '[FAIL] camera rejected required control focus_auto=0'
+		exit 1
+	fi
+	log '[PASS] camera control focus_auto=0'
+	if ! v4l2-ctl -d "$VIDEO" \
+		--set-ctrl="focus_absolute=$MOSQUITO_FOCUS_ABSOLUTE" >> "$TMP_LOG" 2>&1; then
+		log "[FAIL] camera rejected manual focus_absolute=$MOSQUITO_FOCUS_ABSOLUTE"
+		exit 1
+	fi
+	FOCUS_REQUESTED="$MOSQUITO_FOCUS_ABSOLUTE"
+	if ! confirm_focus_value "$FOCUS_REQUESTED"; then
+		log "[FAIL] manual focus readback did not match requested value $FOCUS_REQUESTED; no photo was taken"
+		exit 1
+	fi
+	log "[PASS] camera manual focus_absolute=$MOSQUITO_FOCUS_ABSOLUTE confirmed"
+else
+	set_optional_control focus_auto 1
+fi
 set_optional_control power_line_frequency 1
 
 if ! v4l2-ctl -d "$VIDEO" \
@@ -120,7 +341,129 @@ if ! echo "$ACTIVE_FORMAT" | grep -q '3264/2448'; then
 	exit 1
 fi
 log '[PASS] camera configured for 3264x2448 MJPEG'
-log '[INFO] keep the subject at least 10 cm from the lens; autofocus, auto exposure and auto white balance are enabled.'
+log '[INFO] for close-up tests, start near 9-10 cm and keep the camera, subject and lighting fixed.'
+
+LOCKED_FOCUS=
+FOCUS_STABLE=0
+FOCUS_RESULT=not-applicable
+
+if [ "${MOSQUITO_FOCUS_STABLE_LOCK:-0}" = 1 ]; then
+	if [ -z "$FOCUS_STEP" ]; then
+		log '[FAIL] autofocus stability mode requires a valid focus step; run camera-test0'
+		exit 1
+	fi
+	FOCUS_TOLERANCE=$((FOCUS_STEP * 2))
+	PREVIEW_WARMUP_SECONDS=3
+	FOCUS_SAMPLE_INTERVAL_SECONDS=1
+	FOCUS_SAMPLE_LIMIT=30
+	log '[INFO] starting preview stream for autofocus stabilization'
+	log "[INFO] stable window: 5 samples with max-min <= $FOCUS_TOLERANCE (2 x step=$FOCUS_STEP)"
+	v4l2-ctl -d "$VIDEO" \
+		--stream-mmap=3 --stream-count=100000 \
+		--stream-to=/dev/null >> "$TMP_LOG" 2>&1 &
+	PREVIEW_PID=$!
+	sleep 3
+	if ! kill -0 "$PREVIEW_PID" 2>/dev/null; then
+		wait "$PREVIEW_PID" 2>/dev/null
+		PREVIEW_PID=
+		log '[FAIL] autofocus preview stream stopped unexpectedly'
+		exit 1
+	fi
+
+	FOCUS_SAMPLE=0
+	FOCUS_WINDOW=
+	while [ "$FOCUS_SAMPLE" -lt 30 ]; do
+		FOCUS_SAMPLE=$((FOCUS_SAMPLE + 1))
+		FOCUS_SAMPLE_ATTEMPTS="$FOCUS_SAMPLE"
+		if ! kill -0 "$PREVIEW_PID" 2>/dev/null; then
+			wait "$PREVIEW_PID" 2>/dev/null
+			PREVIEW_PID=
+			log '[FAIL] autofocus preview stream stopped during focus monitoring'
+			exit 1
+		fi
+		FOCUS_OUTPUT="$(v4l2-ctl -d "$VIDEO" --get-ctrl=focus_absolute 2>> "$TMP_LOG")"
+		FOCUS_VALUE="$(echo "$FOCUS_OUTPUT" | sed -n 's/.*:[[:space:]]*\(-*[0-9][0-9]*\).*/\1/p' | sed -n '1p')"
+		FOCUS_DIGITS="$FOCUS_VALUE"
+		case "$FOCUS_DIGITS" in -*) FOCUS_DIGITS="${FOCUS_DIGITS#-}" ;; esac
+		case "$FOCUS_DIGITS" in
+			''|*[!0-9]*)
+				log "[WARN] autofocus sample $FOCUS_SAMPLE/30 did not return a valid focus_absolute"
+				;;
+			*)
+				if ! focus_value_is_valid "$FOCUS_VALUE"; then
+					log "[WARN] autofocus sample $FOCUS_SAMPLE/30 returned out-of-range focus_absolute=$FOCUS_VALUE"
+					[ "$FOCUS_SAMPLE" -lt 30 ] && sleep 1
+					continue
+				fi
+				FOCUS_VALID_SAMPLE_COUNT=$((FOCUS_VALID_SAMPLE_COUNT + 1))
+				FOCUS_SAMPLES="${FOCUS_SAMPLES}${FOCUS_SAMPLES:+,}$FOCUS_VALUE"
+				FOCUS_WINDOW="$FOCUS_WINDOW $FOCUS_VALUE"
+				set -- $FOCUS_WINDOW
+				if [ "$#" -gt 5 ]; then
+					shift
+					FOCUS_WINDOW="$*"
+				fi
+				WINDOW_COUNT=$#
+				if [ "$WINDOW_COUNT" -eq 5 ]; then
+					if ! focus_window_stats "$@"; then
+						log '[FAIL] cannot calculate autofocus window statistics; no photo was taken'
+						exit 1
+					fi
+					log "[INFO] autofocus sample $FOCUS_SAMPLE/30: focus_absolute=$FOCUS_VALUE window=$FOCUS_WINDOW min=$FOCUS_WINDOW_MIN max=$FOCUS_WINDOW_MAX median=$FOCUS_WINDOW_MEDIAN spread=$FOCUS_WINDOW_SPREAD/$FOCUS_TOLERANCE"
+					if [ "$FOCUS_WINDOW_SPREAD" -le "$FOCUS_TOLERANCE" ]; then
+						LOCKED_FOCUS="$FOCUS_WINDOW_MEDIAN"
+						FOCUS_STABLE=1
+						FOCUS_RESULT=stable
+						break
+					fi
+				else
+					FOCUS_WINDOW_COUNT="$WINDOW_COUNT"
+					log "[INFO] autofocus sample $FOCUS_SAMPLE/30: focus_absolute=$FOCUS_VALUE window_count=$WINDOW_COUNT/5"
+				fi
+				;;
+		esac
+		[ "$FOCUS_SAMPLE" -lt 30 ] && sleep 1
+	done
+
+	set -- $FOCUS_WINDOW
+	if [ "$#" -eq 0 ]; then
+		log '[FAIL] autofocus monitoring returned no valid focus_absolute value'
+		exit 1
+	fi
+	if [ "$FOCUS_STABLE" -eq 1 ]; then
+		log "[PASS] autofocus window stabilized; median focus=$LOCKED_FOCUS spread=$FOCUS_WINDOW_SPREAD tolerance=$FOCUS_TOLERANCE"
+	else
+		if ! focus_window_stats "$@"; then
+			log '[FAIL] cannot calculate timeout focus statistics; no photo was taken'
+			exit 1
+		fi
+		LOCKED_FOCUS="$FOCUS_WINDOW_MEDIAN"
+		FOCUS_RESULT=timeout
+		log "[WARN] autofocus did not stabilize within 30 samples; using median=$LOCKED_FOCUS from the last $# valid values"
+	fi
+	if ! focus_value_is_valid "$LOCKED_FOCUS"; then
+		log "[FAIL] selected autofocus value is empty, invalid or outside $FOCUS_MIN..$FOCUS_MAX: ${LOCKED_FOCUS:-empty}; no photo was taken"
+		exit 1
+	fi
+	FOCUS_REQUESTED="$LOCKED_FOCUS"
+	if ! v4l2-ctl -d "$VIDEO" --set-ctrl=focus_auto=0 >> "$TMP_LOG" 2>&1; then
+		log '[FAIL] camera rejected autofocus lock (focus_auto=0)'
+		exit 1
+	fi
+	if ! v4l2-ctl -d "$VIDEO" \
+		--set-ctrl="focus_absolute=$LOCKED_FOCUS" >> "$TMP_LOG" 2>&1; then
+		log "[FAIL] camera rejected locked focus_absolute=$LOCKED_FOCUS"
+		exit 1
+	fi
+	if ! confirm_focus_value "$LOCKED_FOCUS"; then
+		log "[FAIL] autofocus lock readback did not match selected value $LOCKED_FOCUS; no photo was taken"
+		exit 1
+	fi
+	log "[PASS] autofocus disabled and focus locked at $LOCKED_FOCUS with confirmed readback"
+	kill "$PREVIEW_PID" 2>/dev/null
+	wait "$PREVIEW_PID" 2>/dev/null
+	PREVIEW_PID=
+fi
 
 SEQ=1
 if [ -r "$SEQUENCE_FILE" ]; then
@@ -130,7 +473,13 @@ case "$SEQ" in
 	''|*[!0-9]*) SEQ=1 ;;
 esac
 while [ "$SEQ" -le 999999 ]; do
-	NAME="$(printf 'photo-hd-flash-%06d.jpg' "$SEQ")"
+	if [ "${MOSQUITO_FOCUS_STABLE_LOCK:-0}" = 1 ]; then
+		NAME="$(printf 'photo-hd-aflock-%s-%04d-%06d.jpg' "$FOCUS_RESULT" "$LOCKED_FOCUS" "$SEQ")"
+	elif [ -n "${MOSQUITO_FOCUS_ABSOLUTE:-}" ]; then
+		NAME="$(printf 'photo-hd-focus-%03d-%06d.jpg' "$MOSQUITO_FOCUS_ABSOLUTE" "$SEQ")"
+	else
+		NAME="$(printf 'photo-hd-flash-%06d.jpg' "$SEQ")"
+	fi
 	OUT="$CAPTURE_DIR/$NAME"
 	[ -e "$OUT" ] || break
 	SEQ=$((SEQ + 1))
@@ -140,19 +489,180 @@ if [ "$SEQ" -gt 999999 ]; then
 	exit 1
 fi
 
-rm -f "$OUT"
-log '[INFO] warming up for 120 frames so autofocus can settle; camera firmware should illuminate the onboard flash automatically.'
+PART="$OUT.part"
+rm -f "$PART"
+STREAM_SKIP=120
+if [ "${MOSQUITO_FOCUS_STABLE_LOCK:-0}" = 1 ]; then
+	log "[INFO] focus is locked and verified at $LOCKED_FOCUS; skipping 120 frames before capture so exposure and white balance can settle."
+elif [ -n "${MOSQUITO_FOCUS_ABSOLUTE:-}" ]; then
+	log "[INFO] warming up for 120 frames at fixed focus=$MOSQUITO_FOCUS_ABSOLUTE; camera firmware should illuminate the onboard flash automatically."
+else
+	log '[INFO] warming up for 120 frames so autofocus can settle; camera firmware should illuminate the onboard flash automatically.'
+fi
+FOCUS_READBACK_BEFORE_CAPTURE="$(get_control_value focus_absolute)"
+FOCUS_AUTO_BEFORE_CAPTURE="$(get_control_value focus_auto)"
+if [ -n "$FOCUS_REQUESTED" ] && \
+   { ! focus_value_is_valid "$FOCUS_READBACK_BEFORE_CAPTURE" || \
+     [ "$FOCUS_READBACK_BEFORE_CAPTURE" -ne "$FOCUS_REQUESTED" ] || \
+     [ "${FOCUS_AUTO_BEFORE_CAPTURE:-invalid}" != 0 ]; }; then
+	log "[FAIL] fixed focus is not valid before capture: requested=$FOCUS_REQUESTED actual=${FOCUS_READBACK_BEFORE_CAPTURE:-invalid} focus_auto=${FOCUS_AUTO_BEFORE_CAPTURE:-invalid}; no photo was taken"
+	exit 1
+fi
 if ! v4l2-ctl -d "$VIDEO" \
-	--stream-mmap=3 --stream-skip=120 --stream-count=1 \
-	--stream-to="$OUT" >> "$TMP_LOG" 2>&1 || [ ! -s "$OUT" ]; then
-	rm -f "$OUT"
+	--stream-mmap=3 --stream-skip="$STREAM_SKIP" --stream-count=1 \
+	--stream-to="$PART" >> "$TMP_LOG" 2>&1 || [ ! -s "$PART" ]; then
+	rm -f "$PART"
 	log '[FAIL] high-resolution MJPEG capture failed'
 	exit 1
 fi
 
-BYTES="$(ls -ln "$OUT" 2>/dev/null | awk '{print $5}')"
-echo $((SEQ + 1)) > "$SEQUENCE_FILE"
+JPEG_HEAD="$(hexdump -n 2 -e '2/1 "%02x"' "$PART" 2>/dev/null)"
+PART_BYTES="$(wc -c < "$PART" | tr -d ' ')"
+case "$PART_BYTES" in ''|*[!0-9]*) PART_BYTES=0 ;; esac
+if [ "$PART_BYTES" -lt 4 ]; then
+	rm -f "$PART"
+	log '[FAIL] captured frame is too short to be a JPEG'
+	exit 1
+fi
+JPEG_SCAN_BYTES=4096
+JPEG_SCAN_OFFSET=$((PART_BYTES - JPEG_SCAN_BYTES))
+[ "$JPEG_SCAN_OFFSET" -lt 0 ] && JPEG_SCAN_OFFSET=0
+JPEG_END="$(dd if="$PART" bs=1 skip="$JPEG_SCAN_OFFSET" count="$JPEG_SCAN_BYTES" 2>/dev/null | hexdump -v -e '1/1 "%02x"' 2>/dev/null)"
+case "$JPEG_END" in *ffd9*) JPEG_EOI=1 ;; *) JPEG_EOI=0 ;; esac
+if [ "$JPEG_HEAD" != ffd8 ] || [ "$JPEG_EOI" -ne 1 ]; then
+	rm -f "$PART"
+	log "[FAIL] captured frame is not a complete JPEG (SOI=$JPEG_HEAD EOI-found=$JPEG_EOI)"
+	exit 1
+fi
+mv "$PART" "$OUT" || exit 1
+BYTES="$(wc -c < "$OUT" | tr -d ' ')"
+case "${MOSQUITO_FOCUS_STABLE_LOCK:-0}:${MOSQUITO_FOCUS_ABSOLUTE:-}" in
+	1:*) CAPTURE_MODE=autofocus-lock ;;
+	0:?*) CAPTURE_MODE=manual-focus; FOCUS_RESULT=manual ;;
+	*) CAPTURE_MODE=continuous-autofocus; FOCUS_RESULT=continuous ;;
+esac
+FOCUS_READBACK_AFTER_CAPTURE="$(get_control_value focus_absolute)"
+FOCUS_AUTO_AFTER_CAPTURE="$(get_control_value focus_auto)"
+EXPOSURE_VALUE="$(get_control_value exposure_absolute)"
+EXPOSURE_AUTO_VALUE="$(get_control_value exposure_auto)"
+EXPOSURE_PRIORITY_VALUE="$(get_control_value exposure_auto_priority)"
+GAIN_VALUE="$(get_control_value gain)"
+WB_VALUE="$(get_control_value white_balance_temperature)"
+WB_AUTO_VALUE="$(get_control_value white_balance_temperature_auto)"
+POWER_LINE_VALUE="$(get_control_value power_line_frequency)"
+FOCUS_LOCK_VERIFIED="$FOCUS_LOCK_CONFIRMED"
+POST_CAPTURE_FOCUS_ERROR=0
+if [ -n "$FOCUS_REQUESTED" ]; then
+	if focus_value_is_valid "$FOCUS_READBACK_AFTER_CAPTURE" && \
+	   [ "$FOCUS_READBACK_AFTER_CAPTURE" -eq "$FOCUS_REQUESTED" ] && \
+	   [ "${FOCUS_AUTO_AFTER_CAPTURE:-invalid}" = 0 ]; then
+		FOCUS_LOCK_VERIFIED=yes
+	else
+		FOCUS_LOCK_VERIFIED=no
+		POST_CAPTURE_FOCUS_ERROR=1
+		log "[FAIL] fixed focus changed after capture: requested=$FOCUS_REQUESTED actual=${FOCUS_READBACK_AFTER_CAPTURE:-invalid} focus_auto=${FOCUS_AUTO_AFTER_CAPTURE:-invalid}"
+	fi
+fi
+if [ -n "$FOCUS_REQUESTED" ]; then
+	FOCUS_SELECTED="$FOCUS_REQUESTED"
+else
+	FOCUS_SELECTED="$FOCUS_READBACK_AFTER_CAPTURE"
+fi
+FINAL_FORMAT_OUTPUT="$(v4l2-ctl -d "$VIDEO" --get-fmt-video 2>> "$TMP_LOG")"
+FINAL_CONTROLS_OUTPUT="$(v4l2-ctl -d "$VIDEO" --list-ctrls 2>> "$TMP_LOG")"
+FINAL_DEVICE_OUTPUT="$(v4l2-ctl -d "$VIDEO" --all 2>> "$TMP_LOG")"
+JPEG_SHA256="$(sha256sum "$OUT" 2>/dev/null | awk '{print $1}')"
+CAPTURED_AT="$(date '+%Y-%m-%dT%H:%M:%S%z' 2>/dev/null)"
+CAPTURE_YEAR="$(date '+%Y' 2>/dev/null)"
+case "$CAPTURE_YEAR" in ''|*[!0-9]*) SYSTEM_TIME_VALID=no ;; *) [ "$CAPTURE_YEAR" -ge 2024 ] && SYSTEM_TIME_VALID=yes || SYSTEM_TIME_VALID=no ;; esac
+UPTIME_SECONDS="$(cut -d ' ' -f 1 /proc/uptime 2>/dev/null)"
+METADATA="$OUT.txt"
+if ! {
+	echo 'metadata_version=2'
+	echo "photo=$OUT"
+	echo "captured_at=${CAPTURED_AT:-unknown}"
+	echo "system_time_valid=$SYSTEM_TIME_VALID"
+	echo "uptime_seconds=${UPTIME_SECONDS:-unknown}"
+	echo "mode=$CAPTURE_MODE"
+	echo "focus_result=$FOCUS_RESULT"
+	echo "focus_min=${FOCUS_MIN:-unknown}"
+	echo "focus_max=${FOCUS_MAX:-unknown}"
+	echo "focus_step=${FOCUS_STEP:-unknown}"
+	echo "focus_default=${FOCUS_DEFAULT:-unknown}"
+	echo "focus_tolerance=${FOCUS_TOLERANCE:-not-applicable}"
+	echo "focus_sample_attempts=$FOCUS_SAMPLE_ATTEMPTS"
+	echo "focus_valid_sample_count=$FOCUS_VALID_SAMPLE_COUNT"
+	echo "focus_samples=${FOCUS_SAMPLES:-}"
+	echo "focus_window_count=$FOCUS_WINDOW_COUNT"
+	echo "focus_window_min=${FOCUS_WINDOW_MIN:-not-applicable}"
+	echo "focus_window_max=${FOCUS_WINDOW_MAX:-not-applicable}"
+	echo "focus_window_median=${FOCUS_WINDOW_MEDIAN:-not-applicable}"
+	echo "focus_window_spread=${FOCUS_WINDOW_SPREAD:-not-applicable}"
+	echo "focus_requested=${FOCUS_REQUESTED:-auto}"
+	echo "focus_selected=${FOCUS_SELECTED:-unknown}"
+	echo "focus_readback_before_capture=${FOCUS_READBACK_BEFORE_CAPTURE:-unknown}"
+	echo "focus_readback_after_capture=${FOCUS_READBACK_AFTER_CAPTURE:-unknown}"
+	echo "focus_lock_verified=$FOCUS_LOCK_VERIFIED"
+	echo "focus_auto_before_capture=${FOCUS_AUTO_BEFORE_CAPTURE:-unknown}"
+	echo "focus_auto_after_capture=${FOCUS_AUTO_AFTER_CAPTURE:-unknown}"
+	echo "preview_warmup_seconds=$PREVIEW_WARMUP_SECONDS"
+	echo "focus_sample_interval_seconds=$FOCUS_SAMPLE_INTERVAL_SECONDS"
+	echo "focus_sample_limit=$FOCUS_SAMPLE_LIMIT"
+	echo "capture_skip_frames=$STREAM_SKIP"
+	echo "exposure_absolute=${EXPOSURE_VALUE:-unknown}"
+	echo "exposure_auto=${EXPOSURE_AUTO_VALUE:-unknown}"
+	echo "exposure_auto_priority=${EXPOSURE_PRIORITY_VALUE:-unknown}"
+	echo "gain=${GAIN_VALUE:-unknown}"
+	echo "white_balance_temperature=${WB_VALUE:-unknown}"
+	echo "white_balance_temperature_auto=${WB_AUTO_VALUE:-unknown}"
+	echo "power_line_frequency=${POWER_LINE_VALUE:-unknown}"
+	echo 'jpeg_width=3264'
+	echo 'jpeg_height=2448'
+	echo 'jpeg_pixel_format=MJPG'
+	echo "jpeg_bytes=${BYTES:-0}"
+	echo "jpeg_sha256=${JPEG_SHA256:-unknown}"
+	echo "jpeg_soi=$JPEG_HEAD"
+	echo "jpeg_eoi_found=$JPEG_EOI"
+	echo 'jpeg_validation=passed'
+	echo 'flash_mode=camera-firmware-automatic-unverified'
+	echo 'subject_distance=not-measured'
+	echo "video_node=$VIDEO"
+	echo "camera_log=$PERSIST_DIR/camera-test.log"
+	echo
+	echo '[image_version]'
+	if [ -r /etc/mosquito-version ]; then
+		cat /etc/mosquito-version
+	else
+		echo 'unavailable'
+	fi
+	echo
+	echo '[active_format]'
+	printf '%s\n' "$FINAL_FORMAT_OUTPUT"
+	echo
+	echo '[camera_controls]'
+	printf '%s\n' "$FINAL_CONTROLS_OUTPUT"
+	echo
+	echo '[camera_device]'
+	printf '%s\n' "$FINAL_DEVICE_OUTPUT"
+	echo
+	echo '[usb_devices]'
+	lsusb 2>&1
+} > "$METADATA.part" || ! mv "$METADATA.part" "$METADATA"; then
+	rm -f "$METADATA.part"
+	log "[FAIL] cannot save capture metadata: $METADATA"
+	exit 1
+fi
+NEXT_SEQUENCE="$SEQUENCE_FILE.tmp"
+echo $((SEQ + 1)) > "$NEXT_SEQUENCE" && mv "$NEXT_SEQUENCE" "$SEQUENCE_FILE"
 sync
 log "[PASS] captured 3264x2448 MJPEG frame with automatic flash: $OUT (${BYTES:-0} bytes)"
+log "[PASS] capture metadata saved: $METADATA"
 log '[PASS] photo data synchronized to the TF card; camera power will now turn off.'
-log "Logs: $TMP_LOG and $PERSIST_DIR/camera-test.log"
+power_camera_off
+log "PHOTO=$OUT"
+log "METADATA=$METADATA"
+log "LOG=$PERSIST_DIR/camera-test.log"
+if [ "$POST_CAPTURE_FOCUS_ERROR" -ne 0 ]; then
+	log '[FAIL] photo was preserved with metadata, but fixed-focus verification failed after capture'
+	exit 1
+fi

@@ -27,16 +27,28 @@ else
 fi
 
 /etc/init.d/adbd stop 2>/dev/null
-sleep 1
+attempt=0
+while pidof adbd >/dev/null 2>&1 && [ "$attempt" -lt 20 ]; do
+	[ "$attempt" -eq 0 ] && kill $(pidof adbd) 2>/dev/null
+	attempt=$((attempt + 1))
+	usleep 100000
+done
 if pidof adbd >/dev/null 2>&1; then
-	log '[WARN] adbd is still running'
-else
-	log '[PASS] adbd stopped'
+	kill -9 $(pidof adbd) 2>/dev/null
+	sleep 1
 fi
+if pidof adbd >/dev/null 2>&1; then
+	log '[FAIL] adbd could not be stopped'
+	exit 1
+fi
+log '[PASS] adbd stopped'
 
 if grep -q " $FFS functionfs " /proc/mounts; then
-	umount "$FFS" 2>/dev/null && log '[PASS] ADB FunctionFS unmounted' || \
-		log '[WARN] FunctionFS is still mounted; it can be reused by the next start'
+	umount "$FFS" 2>/dev/null || {
+		log '[FAIL] ADB FunctionFS could not be unmounted'
+		exit 1
+	}
+	log '[PASS] ADB FunctionFS unmounted'
 fi
 
 log "Logs: $TMP_LOG and $PERSIST_DIR/usb0-adb-stop.log"

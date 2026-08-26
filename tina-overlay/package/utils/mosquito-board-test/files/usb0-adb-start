@@ -5,6 +5,8 @@ FFS=/dev/usb-ffs/adb
 TMP_LOG=/tmp/mosquito-usb0-adb.log
 PERSIST_DIR=/overlay/mosquito-test
 MODE="${1:-all}"
+MIN_UPTIME="${MOSQUITO_USB0_MIN_UPTIME:-10}"
+MAX_WAIT_SECONDS="${MOSQUITO_USB0_MAX_WAIT:-30}"
 
 mkdir -p "$PERSIST_DIR"
 
@@ -37,13 +39,18 @@ set_device_role()
 
 prepare()
 {
-	log '[STEP] preparing ADB without binding the USB controller'
+	log '[STEP] preparing USB0 ADB gadget after userspace startup'
+	set_device_role || fail 'cannot select USB device role'
 	grep -q ' /sys/kernel/config configfs ' /proc/mounts || \
 		mount -t configfs none /sys/kernel/config || fail 'cannot mount configfs'
 
 	BOUND="$(cat "$GADGET/UDC" 2>/dev/null)"
 	if [ -n "$BOUND" ]; then
-		fail 'gadget is already bound; run usb0-adb-stop before preparing it again'
+		if pidof adbd >/dev/null 2>&1 && [ -e "$FFS/ep1" ]; then
+			log "[PASS] ADB is already prepared and gadget is bound to $BOUND"
+			return 0
+		fi
+		fail "gadget is bound to $BOUND but ADB endpoints are not ready; run usb0-adb-stop first"
 	fi
 
 	mkdir -p "$GADGET/strings/0x409" || fail 'cannot create gadget strings'
@@ -53,7 +60,7 @@ prepare()
 	echo 0x0200 > "$GADGET/bcdUSB"
 	echo MOSQUITO-T113-DEV > "$GADGET/strings/0x409/serialnumber"
 	echo 'Mosquito Project' > "$GADGET/strings/0x409/manufacturer"
-	echo 'Mosquito T113 Dev v2' > "$GADGET/strings/0x409/product"
+	echo 'Mosquito T113 v5.6.2 adb-on validated' > "$GADGET/strings/0x409/product"
 
 	mkdir -p "$GADGET/configs/c.1/strings/0x409" || fail 'cannot create gadget configuration'
 	echo 0xc0 > "$GADGET/configs/c.1/bmAttributes"
@@ -83,18 +90,30 @@ prepare()
 	done
 	[ -e "$FFS/ep1" ] || fail 'adbd did not publish its FunctionFS endpoints'
 	pidof adbd >/dev/null 2>&1 || fail 'adbd exited during preparation'
-	log '[PASS] ADB is prepared; UDC is still deliberately unbound'
-	log '[NEXT] wait at least 10 seconds and run: usb0-adb-start bind'
+	BOUND="$(cat "$GADGET/UDC" 2>/dev/null)"
+	if [ -n "$BOUND" ]; then
+		log "[PASS] vendor USB manager bound the ready ADB gadget to $BOUND"
+	else
+		log '[PASS] ADB endpoints are prepared and gadget is deliberately unbound'
+	fi
+	log '[NEXT] run: usb0-adb-start bind'
 }
 
 wait_until_safe()
 {
+	waited=0
 	while :; do
 		up="$(cut -d. -f1 /proc/uptime 2>/dev/null)"
 		case "$up" in ''|*[!0-9]*) up=0 ;; esac
-		[ "$up" -ge 10 ] && return 0
-		log "[INFO] waiting for stable userspace before UDC bind (${up}/10 seconds)"
+		UDC="$(ls /sys/class/udc 2>/dev/null | sed -n '1p')"
+		if [ "$up" -ge "$MIN_UPTIME" ] && [ -n "$UDC" ]; then
+			return 0
+		fi
+		[ "$waited" -lt "$MAX_WAIT_SECONDS" ] || \
+			fail "USB0 dependencies were not ready after ${MAX_WAIT_SECONDS} seconds"
+		log "[INFO] waiting for USB0 dependencies (uptime=${up}/${MIN_UPTIME}, UDC=${UDC:-missing})"
 		sleep 1
+		waited=$((waited + 1))
 	done
 }
 
@@ -140,6 +159,7 @@ bind)
 	;;
 all)
 	: > "$TMP_LOG"
+	wait_until_safe
 	prepare
 	bind_udc
 	;;

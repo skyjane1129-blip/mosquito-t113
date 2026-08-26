@@ -1,3 +1,20 @@
+# Keep Linux firmware sources and scripts usable after a Windows checkout.
+* text=auto
+
+*.c text eol=lf
+*.h text eol=lf
+*.md text eol=lf
+*.sh text eol=lf
+*.conf text eol=lf
+*.cfg text eol=lf
+*.dts text eol=lf
+*.fex text eol=lf
+*.mk text eol=lf
+Makefile text eol=lf
+tina-overlay/package/utils/mosquito-board-test/files/* text eol=lf
+tina-overlay/target/allwinner/t113-mosquito/busybox-init-base-files/etc/init.d/* text eol=lf
+
+*.docx binary
+*.img binary
 *.pdf binary
 *.tel binary
-*.img binary
