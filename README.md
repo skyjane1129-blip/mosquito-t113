@@ -9,9 +9,10 @@ Mosquito 是基于全志 T113-S3 的嵌入式 Linux 监测终端项目。目前�
 1. [`AGENTS.md`](AGENTS.md)：实板诊断、新镜像门槛、Git 和发布规则；
 2. [`docs/CURRENT_STATE.md`](docs/CURRENT_STATE.md)：当前镜像、证据等级、功能状态和风险；
 3. [`docs/NEXT_IMAGE.md`](docs/NEXT_IMAGE.md)：当前唯一允许推进的验收步骤；
-4. [`releases/mosquito-t113/README.md`](releases/mosquito-t113/README.md)：全部历史版本索引。
+4. [`docs/DEVELOPMENT_WORKFLOW.md`](docs/DEVELOPMENT_WORKFLOW.md)：WSL2、Windows 硬件桥接、Git 和自动测试闭环；
+5. [`releases/mosquito-t113/README.md`](releases/mosquito-t113/README.md)：全部历史版本索引。
 
-当前 `main` 是集成开发基线，不等同于生产稳定版。普通 Git 克隆不包含被忽略的 `.img` 或第三方 Tina SDK；Windows 负责 Git、ADB、PhoenixCard 和串口，Tina 编译应在 Ubuntu 虚拟机或 WSL/Linux 环境完成。
+当前 `main` 是集成开发基线，不等同于生产稳定版。普通 Git 克隆不包含被忽略的 `.img` 或第三方 Tina SDK。板端仓库、Tina SDK 和编译输出放在 WSL2 ext4，并只由 WSL Git 写入；Windows 继续负责 ADB、USB/UART、PhoenixCard 和少量产物暂存。Windows ChatGPT 应用中的 WSL2 Agent 与 PowerShell 启动的 WSL2 Codex CLI 是同一套开发架构的两种入口。
 
 ## 当前硬件
 

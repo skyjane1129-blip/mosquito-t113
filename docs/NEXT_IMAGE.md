@@ -1,6 +1,6 @@
 # Mosquito 下一镜像计划
 
-更新时间：2026-08-27（Asia/Hong_Kong）
+更新时间：2026-08-28（Asia/Shanghai）
 
 ## 1. 当前决定
 
@@ -321,21 +321,24 @@ userspace 明确就绪
 9. 更新三个权威文档和版本 README。
 10. 经用户同意后提交/推送源码；如需上传镜像，再创建对应 Git tag 与 GitHub Release 附件。
 
-## 9. Windows Agent 接手清单
+## 9. WSL2 Agent 接手清单
 
-Windows 克隆 GitHub 项目后，Agent 的第一轮工作必须是：
+在 WSL2 ext4 克隆 GitHub 项目后，Agent 的第一轮工作必须是：
 
-```powershell
+```sh
+echo "$WSL_DISTRO_NAME"
+uname -a
+pwd
 git remote -v
 git branch --show-current
 git status --short --branch
 git rev-parse HEAD
-Get-Content .\AGENTS.md
-Get-Content .\docs\CURRENT_STATE.md
-Get-Content .\docs\NEXT_IMAGE.md
-Get-Content .\releases\mosquito-t113\2026-08-26-dev-v5.6.2-adb-on-validated\README.md
-adb version
-adb devices -l
+cat AGENTS.md
+cat docs/CURRENT_STATE.md
+cat docs/NEXT_IMAGE.md
+cat docs/DEVELOPMENT_WORKFLOW.md
+cat releases/mosquito-t113/2026-08-26-dev-v5.6.2-adb-on-validated/README.md
+powershell.exe -NoProfile -Command 'adb version; adb devices -l'
 ```
 
 如果只克隆了 Git 仓库而未下载 Release 附件，本地没有 `.img` 是正常现象。Agent 可以继续读代码、诊断和规划；需要烧录时才把对应附件下载到现有版本目录并校验 SHA-256。没有设备连接时，不得把源码分析写成实板验证。
