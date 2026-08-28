@@ -1,12 +1,13 @@
 # Mosquito 当前状态
 
-更新时间：2026-08-27（Asia/Hong_Kong）
+更新时间：2026-08-28（Asia/Shanghai）
 
 本文只记录已有证据支持的事实。新 Agent 接手时应先读根目录 `AGENTS.md`，再读本文和 `docs/NEXT_IMAGE.md`。
 
 ## 1. 当前结论
 
 - GitHub 仓库：`https://github.com/skyjane1129-blip/mosquito-t113.git`。
+- 开发环境已确认迁移到 Windows + WSL2 混合方案：板端仓库、Tina SDK 和编译输出位于 WSL2 ext4，仓库只由 WSL Git 写入；Windows 负责 ADB、UART、PhoenixCard 和少量产物暂存。完整规则见 `docs/DEVELOPMENT_WORKFLOW.md`。
 - 目标集成分支：`main`。本次整理开始时，工作现场位于 `agent/sim-diagnostics`，它与本地及远端 `main` 都基于 `90000d8`，大量后续开发尚在工作区中；本轮目标是把审核后的现场整理为新的 `main` 基线。
 - 当前源码对应的镜像身份：`dev-v5.6.2-adb-on-validated`，板级包 `mosquito-board-test 2.17-1`。
 - 当前首选候选成品：`releases/mosquito-t113/2026-08-26-dev-v5.6.2-adb-on-validated/mosquito-t113-dev-v5.6.2-adb-on-validated.img`。
@@ -66,7 +67,7 @@ v5.6.2 当前总体为 **B+C**，尚未达到整版 A。
 - `docs/`：技术分析、当前状态和下一镜像计划。
 - `apps/hello-t113/`：ARMv7 hard-float/musl 交叉编译最小示例。
 
-完整 Tina T113 SDK、下载缓存、工具链和构建输出不进入 Git。Windows Agent 应在 Ubuntu 虚拟机或 WSL 中把 `tina-overlay/` 按原相对路径覆盖到已有 SDK 后工作。
+完整 Tina T113 SDK、下载缓存、工具链和构建输出不进入 Git。运行在 WSL2 中的 Agent 应把 `tina-overlay/` 按原相对路径覆盖到同级的完整 SDK 后工作，并可从 WSL2 调用 Windows ADB/UART 工具完成实板测试。
 
 ## 5. 当前成品身份与可追溯性
 

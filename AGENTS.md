@@ -1,6 +1,6 @@
 # Mosquito 固件开发与 Agent 交接规则
 
-本文件适用于整个仓库。最终目标是：任何开发者或 Agent 在 Windows 上克隆 GitHub `main` 后，仅依靠仓库内文档就能判断当前事实、接续任务，并严格遵守实板验证和新镜像生成门槛。
+本文件适用于整个仓库。最终目标是：任何开发者或 Agent 在 WSL2 ext4 中克隆 GitHub `main` 后，仅依靠仓库内文档就能判断当前事实、接续任务，并严格遵守实板验证和新镜像生成门槛。Windows 继续提供 ADB、UART 和烧录能力，但不维护第二份板端仓库。
 
 ## 一、权威文档与阅读顺序
 
@@ -9,28 +9,34 @@
 1. `AGENTS.md`：不可绕过的工作规则。
 2. `docs/CURRENT_STATE.md`：当前源码、镜像、实板验证、已知问题和风险。
 3. `docs/NEXT_IMAGE.md`：现阶段下一步、验收矩阵及新镜像准入条件。
-4. `README.md`、`tina-overlay/MOSQUITO_BUILD.md`：项目使用与构建背景。
-5. 当前版本的 `releases/mosquito-t113/<版本>/README.md`。
+4. `docs/DEVELOPMENT_WORKFLOW.md`：WSL2、Windows 硬件桥接、Git 和自动测试闭环。
+5. `README.md`、`tina-overlay/MOSQUITO_BUILD.md`：项目使用与构建背景。
+6. 当前版本的 `releases/mosquito-t113/<版本>/README.md`。
 
 若文档互相冲突，以“更保守、不会生成新镜像、不会破坏现有数据”的解释为准，并先向用户报告冲突。不得凭聊天记忆覆盖仓库中的明确事实；发现事实变化时，应在本次工作结束前同步更新 `CURRENT_STATE.md` 和 `NEXT_IMAGE.md`。
 
-## 二、克隆后的首次检查
+## 二、WSL2 克隆后的首次检查
 
-Windows Agent 必须先确认自己位于正确仓库和分支。可在 PowerShell 中运行：
+Agent 必须运行在 WSL2 中，并先确认自己位于 ext4 上的正确仓库和分支。可在 WSL shell 中运行：
 
-```powershell
+```sh
+echo "$WSL_DISTRO_NAME"
+uname -a
+pwd
 git remote -v
 git branch --show-current
 git status --short --branch
 git rev-parse HEAD
-Get-Content .\AGENTS.md
-Get-Content .\docs\CURRENT_STATE.md
-Get-Content .\docs\NEXT_IMAGE.md
+cat AGENTS.md
+cat docs/CURRENT_STATE.md
+cat docs/NEXT_IMAGE.md
 ```
 
-预期远端是 `https://github.com/skyjane1129-blip/mosquito-t113.git`，正常接手分支是 `main`。若远端、分支或工作区状态不同，不得自动丢弃、覆盖、提交或合并现有修改；先识别这些修改属于谁、是否与当前任务相关。
+预期路径位于 `/home/...` 而不是 `/mnt/c/...`，远端是 `https://github.com/skyjane1129-blip/mosquito-t113.git`，正常接手分支是 `main`。若环境、远端、分支或工作区状态不同，不得自动丢弃、覆盖、提交或合并现有修改；先识别这些修改属于谁、是否与当前任务相关。
 
-Windows 负责 Git、ADB、PhoenixCard、串口终端和文件管理。Tina Linux SDK 的编译环境是 Linux；在 Windows 上应使用已经验证的 Ubuntu 虚拟机或 WSL 环境。不得假定仓库包含约 17 GB 的第三方 Tina SDK、下载缓存或工具链，也不得把这些内容提交到本仓库。
+板端仓库、完整 Tina SDK、Linux 工具链和编译输出都放在 WSL2 ext4；仓库只由 WSL Git 写入。Windows 负责 ADB、USB/UART 驱动、PhoenixCard、串口终端和少量产物暂存。不得使用 Windows Git 经 `\\wsl$` 写入该仓库，也不得在 Windows 和 WSL2 各维护一份可写 checkout。不得假定仓库包含约 17 GB 的第三方 Tina SDK、下载缓存或工具链，也不得把这些内容提交到本仓库。
+
+推荐目录为 `~/work/mosquito/mosquito-t113` 和同级的 `~/work/mosquito/tina-t113`。WSL2 中的 Agent 可直接调用 Windows `adb.exe` 或固定 PowerShell 脚本测试开发板；详细边界见 `docs/DEVELOPMENT_WORKFLOW.md`。
 
 仓库的 `.gitattributes` 用于保护 Shell 脚本及 Linux 配置的 LF 行尾。不得用会批量改写行尾或可执行位的工具保存整个 `tina-overlay/`。
 
@@ -101,11 +107,12 @@ Windows 负责 Git、ADB、PhoenixCard、串口终端和文件管理。Tina Linu
 
 - `main` 表示当前集成开发基线，不自动等同于生产稳定镜像。
 - `main` 中的源码、`CURRENT_STATE.md`、`NEXT_IMAGE.md` 和当前发布说明必须一致。
-- 功能开发和诊断可在主题分支进行；只有证据、文档和文件范围审核完成后才进入 `main`。
+- 功能开发和诊断必须在短生命周期主题分支进行，推荐使用 `feature/`、`fix/`、`test/`、`docs/`、`infra/`、`release/` 前缀；只有证据、文档和文件范围审核完成后才通过 PR 进入 `main`。
 - 不得强制推送、重写已发布历史或把多个来源不明的工作区修改一次性盲目提交。
 - 不得清理用户现有修改。提交前必须检查 `git diff --check`、`git status`、脚本语法和版本引用。
 - 没有用户要求时，不自动创建提交、标签、GitHub Release 或推送远端。
 - 将某一版本设为 `main` 不等于授权生成该版本之后的新镜像。
+- Windows 客户端以后使用独立仓库和 Windows Git，不能成为本板端仓库在 NTFS 上的第二份副本。
 
 ### 新传入文件的推送确认门槛
 
@@ -155,6 +162,7 @@ Get-FileHash .\releases\mosquito-t113\<版本>\<镜像>.img -Algorithm SHA256
 
 - `docs/CURRENT_STATE.md`：已经发生并有证据支持的事实；
 - `docs/NEXT_IMAGE.md`：仍需执行的下一步、门槛和验收项；
+- `docs/DEVELOPMENT_WORKFLOW.md`：开发环境、Git 位置或硬件桥接规则发生变化时同步更新；
 - 对应版本 `README.md`：该成品独有的身份、状态和证据。
 
 最后向用户汇总：改了什么、没有改什么、验证了什么、未验证什么、当前风险、是否涉及新镜像，以及下一步是否需要用户授权。

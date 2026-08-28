@@ -8,11 +8,22 @@
 # Build outputs and binaries
 /build/
 /apps/hello-t113/hello-t113
+/apps/hello-t113/build/
 /releases/**/*.img
 *.o
 *.a
 *.so
 *.log
+
+# SDK migration archives and interrupted downloads
+*.tar.zst
+*.tar.zst.sha256
+*.partial
+
+# Local device and environment configuration
+/.env
+/.env.local
+/local/
 
 # Desktop/editor noise
 .DS_Store
