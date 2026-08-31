@@ -14,6 +14,9 @@ Mosquito 是基于全志 T113-S3 的嵌入式 Linux 监测终端项目。目前�
 
 当前 `main` 是集成开发基线，不等同于生产稳定版。普通 Git 克隆不包含被忽略的 `.img` 或第三方 Tina SDK。板端仓库、Tina SDK 和编译输出放在 WSL2 ext4，并只由 WSL Git 写入；Windows 继续负责 ADB、USB/UART、PhoenixCard 和少量产物暂存。Windows ChatGPT 应用中的 WSL2 Agent 与 PowerShell 启动的 WSL2 Codex CLI 是同一套开发架构的两种入口。
 
+从 VMware Ubuntu 向 WSL2 迁移完整 Tina SDK 时，另见
+[`docs/WSL2_SDK_MIGRATION.md`](docs/WSL2_SDK_MIGRATION.md)。该流程只迁移本地构建环境；第三方 SDK、工具链、下载缓存、构建输出和实际 `.img` 仍不得进入 Git。
+
 ## 当前硬件
 
 - 主控：Allwinner T113-S3，双核 Cortex-A7，128 MiB DDR3
@@ -139,6 +142,9 @@ arm-openwrt-linux-muslgnueabi-
 - `lichee/.../sun8iw20p1_mosquito_defconfig`：Mosquito U-Boot 配置
 
 将 `tina-overlay/` 中的文件按原相对路径覆盖到已有 Tina T113 SDK 后，参考 [`MOSQUITO_BUILD.md`](tina-overlay/MOSQUITO_BUILD.md) 构建。
+
+WSL2 中应把 GitHub 仓库与完整 SDK 分开放在 Linux 文件系统，先按
+[`WSL2_SDK_MIGRATION.md`](docs/WSL2_SDK_MIGRATION.md) 校验迁移归档、符号链接、构建入口和覆盖层差异。迁移完成不等于允许运行 `make` 或 `pack`；新镜像门槛仍以 `AGENTS.md` 和 `docs/NEXT_IMAGE.md` 为准。
 
 ## 镜像
 

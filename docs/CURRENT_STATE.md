@@ -1,19 +1,21 @@
 # Mosquito 当前状态
 
-更新时间：2026-08-28（Asia/Shanghai）
+更新时间：2026-08-31（Asia/Hong_Kong）
 
 本文只记录已有证据支持的事实。新 Agent 接手时应先读根目录 `AGENTS.md`，再读本文和 `docs/NEXT_IMAGE.md`。
 
 ## 1. 当前结论
 
 - GitHub 仓库：`https://github.com/skyjane1129-blip/mosquito-t113.git`。
-- 开发环境已确认迁移到 Windows + WSL2 混合方案：板端仓库、Tina SDK 和编译输出位于 WSL2 ext4，仓库只由 WSL Git 写入；Windows 负责 ADB、UART、PhoenixCard 和少量产物暂存。完整规则见 `docs/DEVELOPMENT_WORKFLOW.md`。
+- 开发环境方案已确认采用 Windows + WSL2 混合架构：板端仓库、Tina SDK 和编译输出以 WSL2 ext4 为目标位置，仓库只由 WSL Git 写入；Windows 负责 ADB、UART、PhoenixCard 和少量产物暂存。完整规则见 `docs/DEVELOPMENT_WORKFLOW.md`。实际 Tina SDK 数据迁移尚未闭环。
 - 目标集成分支：`main`。本次整理开始时，工作现场位于 `agent/sim-diagnostics`，它与本地及远端 `main` 都基于 `90000d8`，大量后续开发尚在工作区中；本轮目标是把审核后的现场整理为新的 `main` 基线。
 - 当前源码对应的镜像身份：`dev-v5.6.2-adb-on-validated`，板级包 `mosquito-board-test 2.17-1`。
 - 当前首选候选成品：`releases/mosquito-t113/2026-08-26-dev-v5.6.2-adb-on-validated/mosquito-t113-dev-v5.6.2-adb-on-validated.img`。
 - v5.6.2 的 ADB 与 4G 修复曾在已运行的 v5.6.1 系统可写 overlay 上完成实板验证；v5.6.2 成品本身已完成构建、打包、SquashFS 反查和本地 SHA-256 校验，但尚缺“烧录这一精确成品后的最终冷启动验收”。
 - 因此当前状态是“开发主线候选”，不是野外生产稳定版；当前第一任务是验证已有 v5.6.2，不是制作 v5.6.3。
 - 本次文档整理环境没有 `adb` 命令，也没有发现 `/dev/ttyUSB*` 或 `/dev/ttyACM*`，因此本轮没有新增任何实板验证结论。
+- 当前开发主机正在从“VMware Ubuntu 负责编译、Windows 负责 ADB/烧录”迁移到“WSL2 负责编译、Windows 负责 ADB/烧录”。GitHub 只迁移 Mosquito 自研仓库；被忽略的完整 Tina SDK、工具链、下载缓存、构建输出和实际 `.img` 不会随普通克隆进入 WSL2。
+- 2026-08-31 已从 VMware 中的现有 `tina-t113/` SDK 根目录生成 WSL2 私下迁移归档 `/tmp/tina-t113-sdk-vm-snapshot-2026-08-31.tar.zst`，排除主机相关历史 `out/` 与 `logs/`；归档大小 `10,207,332,418` bytes，SHA-256 为 `87b179f5aabae86b51df020a6f32b63a1df67a66530e7a04aad0d150b0007bc0`，`sha256sum -c` 和 `tar --zstd -tf` 完整遍历均通过。该归档包含第三方 Tina SDK，禁止加入 Git 或公开分发；WSL2 解压、主机依赖和实际构建能力仍待验证，操作说明见 `docs/WSL2_SDK_MIGRATION.md`。
 - 2026-08-26用户从连接实板的Windows PowerShell回传：`adb devices -l`显示`MOSQUITO-T113-DEV device`，`adb shell mosquito-version`精确显示`dev-v5.6.2-adb-on-validated`/`2026-08-26`/`2.17-1`，`command -v gnss-test`返回`/usr/bin/gnss-test`。因此当前运行镜像身份、ADB通道和GNSS工具存在性已实板确认；尚未提供该镜像的完整冷启动日志或GNSS室外定位结果。
 - 用户的有源陶瓷GNSS天线已确认标称支持3–5 V、50 Ω、GPS L1/BeiDou B1频点、120 mm馈线和IPEX一代接头，电压与Air780EG的3.3 V `GNSS_VCC`相容；但商家尚未给出3.3 V下的典型/最大工作电流，且三种陶瓷尺寸尚未实板比较。
 - 2026-08-26同一连板PowerShell执行`adb shell 4g-stop`返回`Air780EG PPP is not running`，`pidof pppd`无输出，`ip link show ppp0`返回`can't find device 'ppp0'`。这确认当时PPP进程和`ppp0`均不存在，GNSS诊断不会与pppd争用`/dev/ttyS1`；尚未运行`gnss-test`。
@@ -195,5 +197,6 @@ photo-upload 'https://接收端地址' '/mnt/UDISK/mosquito-test/camera/照片.j
 7. **第三方依赖**：GitHub 不包含 Tina SDK、工具链、PhoenixCard 或厂商许可内容。
 8. **许可**：仓库尚未声明开源许可证；公开可见不等于允许重新分发第三方内容。
 9. **历史候选很多**：版本目录代表可追溯记录，不代表每版都推荐烧录；必须先看状态行。
+10. **WSL2 构建环境尚未闭环**：VMware SDK 迁移归档已生成并完成静态校验，但尚未在 WSL2 解压、检查符号链接和构建入口，也未验证 WSL2 主机依赖；环境迁移不构成新镜像授权。
 
 下一步和精确验收命令见 `docs/NEXT_IMAGE.md`。
