@@ -1,6 +1,6 @@
 # Mosquito 下一镜像计划
 
-更新时间：2026-08-28（Asia/Shanghai）
+更新时间：2026-08-31（Asia/Hong_Kong）
 
 ## 1. 当前决定
 
@@ -18,6 +18,8 @@ v5.6.2 已经生成，不属于“下一镜像”。其当前 SHA-256 是：
 ```text
 f0d24710f165122fe7539098c777d15f25c52d0b73874ac6a3ca421b38edaf08
 ```
+
+当前还在进行开发主机迁移：从 VMware Ubuntu + Windows ADB 转为 WSL2 + Windows ADB。2026-08-31 已生成不含历史 `out/`、`logs/` 的本地 Tina SDK 私下迁移归档，并完成 SHA-256 和归档遍历校验；WSL2 解压、主机依赖和构建入口尚待验证。迁移步骤见 `docs/WSL2_SDK_MIGRATION.md`。这只属于环境准备，不表示允许执行 `make`、`pack` 或制作下一镜像。
 
 ## 2. 当前验收目标
 
@@ -44,6 +46,7 @@ TF 冷启动
 
 ### 3.1 主机与文件
 
+- 若使用 WSL2 作为 Tina 编译环境，先按 `docs/WSL2_SDK_MIGRATION.md` 完成归档校验、Linux 文件系统解压、关键入口检查和 `tina-overlay/` 同步；首次 WSL2 实际构建仍需单独授权和记录。
 - Windows 安装 Google 官方 Platform-Tools，确保 `adb version` 可用。
 - 准备能够保存完整启动日志的 3.3 V TTL UART0，115200 8N1、无流控。
 - 准备已验证的数据 USB 线、USB0/TYPE_C1、USB1 摄像头和可用 Air780EG 天线/SIM。
