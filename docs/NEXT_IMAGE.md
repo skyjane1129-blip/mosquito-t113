@@ -1,52 +1,65 @@
 # Mosquito 下一镜像计划
 
-更新时间：2026-08-31（Asia/Hong_Kong）
+更新时间：2026-09-05（Asia/Shanghai）
 
 ## 1. 当前决定
 
-**现在不制作新镜像。** 当前任务是把已经存在的 `dev-v5.6.2-adb-on-validated` 精确成品烧录到目标板，完成最终冷启动与关键路径回归。没有新的根因证据，也没有用户对“下一版镜像”的明确授权，因此：
+**v5.6.3 已按用户明确授权制作，并完成精确成品自动 ADB 冷启动 3/3 验收。** 本版本严格采用 v5.6.2 的 `mosquito-board-test 2.17-1` 基线，只加入 userspace 就绪后的自动调用既有 `adb-on`；下一步是完成热插拔及关键路径回归。
 
-- 不分配 v5.6.3 或其他新版本号；
-- 不修改 `mosquito-version.conf` 或板级包版本；
-- 不把新的临时修复写入固件源码；
-- 不运行 Tina `make` 或 `pack`；
-- 不建立新版本发布目录；
-- 不复制、上传或发布新的镜像。
+本次 v5.6.3 明确：
 
-v5.6.2 已经生成，不属于“下一镜像”。其当前 SHA-256 是：
+- 不把当前未提交的 `2.18-1` candidate、看门狗、`adb reboot` 修复、GNSS、生产云/安全改动放入镜像；
+- 不把 v5.6.2 临时 overlay 的 3/3 通过结果写成精确 v5.6.3 成品已上板通过；
+- 在用户确认 v5.6.3 通过前，不开始包含 `2.18-1` 的下一镜像集成。
+
+v5.6.2 的历史成品 SHA-256 是：
 
 ```text
 f0d24710f165122fe7539098c777d15f25c52d0b73874ac6a3ca421b38edaf08
 ```
 
-当前还在进行开发主机迁移：从 VMware Ubuntu + Windows ADB 转为 WSL2 + Windows ADB。2026-08-31 已生成不含历史 `out/`、`logs/` 的本地 Tina SDK 私下迁移归档，并完成 SHA-256 和归档遍历校验；WSL2 解压、主机依赖和构建入口尚待验证。迁移步骤见 `docs/WSL2_SDK_MIGRATION.md`。这只属于环境准备，不表示允许执行 `make`、`pack` 或制作下一镜像。
+v5.6.3 精确成品已生成，文件位于：
+
+```text
+releases/mosquito-t113/2026-09-04-dev-v5.6.3-usb0-adb-autostart/mosquito-t113-dev-v5.6.3-usb0-adb-autostart.img
+size=11,508,736 bytes
+sha256=7f763d7795c9c0f4a8e3be5e904ec454f39db73cb34eb603af5f45bc587568a7
+```
+
+它的身份是 `dev-v5.6.3-usb0-adb-autostart`、构建日期 `2026-09-04`、板级包 `2.17-1`，源码状态为 `auto-adb-rc-final-cdf51dd`。成品已通过低并行 `make -j1`、官方 `pack` 和 SquashFS 静态反查；用户已烧录并完成 3 次精确成品冷启动验收。
+
+2026-09-01 晚间的临时晚期自动 ADB 回归还发现：自动启动本身在物理 Reset 后可达到 `adbd=1`、`ep0/ep1/ep2` 和 `UDC=configured`，但 `adb reboot` 会在 UART 报 `Reboot failed -- System halted` 并停死，900 秒内不会自行回来。当前 v5.6.2 因此不能把软件重启列为通过项。初步根因是运行内核未启用 `CONFIG_WATCHDOG`/`CONFIG_SUNXI_WATCHDOG`，候选修复需要单独批准；在批准前不改 overlay、不构建、不 `pack`、不烧录。
+
+开发主机迁移已完成到“SDK 恢复和板测程序交叉编译可用”阶段：完整 SDK 位于 `/home/janelinux/work/mosquito/tina-t113`，当前占用约 15 GB。本轮已在受控低并行配置下完成完整 Tina `make -j1`、官方 `pack` 和成品静态反查；迁移步骤和边界见 `docs/WSL2_SDK_MIGRATION.md`。WSL 期间未出现 OOM、磁盘耗尽或 I/O 错误，后续仍应保持低并行和日志重定向。
 
 ## 2. 当前验收目标
 
-验收需要回答一个问题：在不依赖 v5.6.1 临时 overlay 的情况下，v5.6.2 成品是否可以从干净冷启动完成以下闭环：
+验收需要继续回答一个问题：在不依赖临时 overlay 的情况下，v5.6.3 精确成品除自动 ADB 冷启动 3/3 已通过外，能否完成以下关键路径闭环：
 
 ```text
 TF 冷启动
-  -> UART0 Root Shell
-  -> ADB 默认关闭
-  -> 一条 adb-on
-  -> Windows ADB device/root shell/push/pull
+  -> userspace 就绪
+  -> 自动调用一次 adb-on
+  -> Windows ADB device/root shell
+  -> push/pull
   -> 摄像头拍照与元数据
   -> 4G PPP/DNS/NTP/HTTPS
   -> 4G 与 ADB 共存
   -> 4g-stop
-  -> 重启后 ADB 再次默认关闭
+  -> 重启后自动 ADB 再次在线
 ```
 
-验收结果必须来自本目录中的精确 `.img`，不能用“v5.6.1 overlay 已通过”代替。
+验收结果必须来自本目录中的精确 v5.6.3 `.img`，不能用“v5.6.2 临时 overlay 已通过”代替。
 
-用户已收到有源陶瓷GNSS天线，并要求优先完成v5.6.2的真实室外GNSS定位。聚焦交接、天线边界、首轮命令、隐私要求和失败分类见 `docs/HANDOFF_2026-08-26_V562_GNSS.md`。2026-08-26已由连板Windows PowerShell确认实际运行身份为`dev-v5.6.2-adb-on-validated`/`2.17-1`，`/usr/bin/gnss-test`存在，且PPP已停止。15×15室外R1/R2分别最多3颗和4颗可见、C/N0 25–27，两轮均0颗参与定位。2026-08-27用户回传的拼接文本最后一段结合操作顺序暂按18×18室外R1：5分钟大部分为0颗，后期仅1颗、C/N0 21–28，直到末尾才解出UTC，仍`fix=0 mode=1`和`PASS=6 FAIL=0 WARN=1`；该段还需用唯一命名原始文件确认来源。当前不再重复换尺寸：先断电复查RF2/IPEX和摆放，做UART-only/ADB停止对照；仍弱则测RF2在GNSS开/关时是否约3.3 V/0 V，并用已知正常天线或开发板交叉验证。不制作新镜像。
+软件重启的当前证据位于 `build/test-runs/20260901-174914+0800-auto-adb/`，包括 UART、轮询和 `/proc/config.gz`。物理 Reset 恢复后的自动 ADB 结果不能抵消 `adb reboot` 的失败。
+
+用户已收到有源陶瓷GNSS天线，并要求优先完成 v5.6.2 的真实室外 GNSS 定位。聚焦交接、天线边界、首轮命令、隐私要求和失败分类见 `docs/HANDOFF_2026-08-26_V562_GNSS.md`。现有记录仍是 15×15/18×18 天线未定位；该 GNSS 诊断方向不属于 v5.6.3，本次不把 GNSS 修复纳入镜像。
 
 ## 3. 验收前准备
 
 ### 3.1 主机与文件
 
-- 若使用 WSL2 作为 Tina 编译环境，先按 `docs/WSL2_SDK_MIGRATION.md` 完成归档校验、Linux 文件系统解压、关键入口检查和 `tina-overlay/` 同步；首次 WSL2 实际构建仍需单独授权和记录。
+- 若使用 WSL2 作为 Tina 编译环境，先按 `docs/WSL2_SDK_MIGRATION.md` 完成归档校验、Linux 文件系统解压、关键入口检查和 `tina-overlay/` 同步；本次 v5.6.3 已完成首次低并行实际构建并保留日志。
 - Windows 安装 Google 官方 Platform-Tools，确保 `adb version` 可用。
 - 准备能够保存完整启动日志的 3.3 V TTL UART0，115200 8N1、无流控。
 - 准备已验证的数据 USB 线、USB0/TYPE_C1、USB1 摄像头和可用 Air780EG 天线/SIM。
@@ -57,10 +70,10 @@ TF 冷启动
 PowerShell 校验候选镜像：
 
 ```powershell
-Get-FileHash .\releases\mosquito-t113\2026-08-26-dev-v5.6.2-adb-on-validated\mosquito-t113-dev-v5.6.2-adb-on-validated.img -Algorithm SHA256
+Get-FileHash .\releases\mosquito-t113\2026-09-04-dev-v5.6.3-usb0-adb-autostart\mosquito-t113-dev-v5.6.3-usb0-adb-autostart.img -Algorithm SHA256
 ```
 
-必须得到 `f0d24710...edaf08`。不一致时立即停止，不得烧录。
+必须得到 `7f763d77...7568a7`。不一致时立即停止，不得烧录。
 
 ### 3.2 烧录安全
 
@@ -69,7 +82,9 @@ Get-FileHash .\releases\mosquito-t113\2026-08-26-dev-v5.6.2-adb-on-validated\mos
 - 不使用普通 `dd` 或 Etcher。
 - 烧录完成后保留 PhoenixCard 的成功/校验结果。
 
-## 4. v5.6.2 最终验收矩阵
+## 4. v5.6.2 历史最终验收矩阵
+
+以下矩阵记录 v5.6.2 的历史基线要求；v5.6.3 需沿用相关数据、摄像头和 4G 回归，并将“ADB 默认关闭 + 手动 `adb-on`”改为“userspace 就绪后的自动 ADB”，同时仍保留手动命令作为救援入口。
 
 ### A. 首次冷启动与身份
 
@@ -236,9 +251,11 @@ pidof adbd || true
 
 重启后测试文件应存在，ADB 应重新默认关闭。
 
-## 5. 最终通过标准
+注意：上述持久化测试依赖系统能够完成重启；当前 v5.6.2 的 `adb reboot` 已知会停在 `Reboot failed -- System halted`，不得把超时当作偶发 ADB 问题。候选修复是启用内置 `CONFIG_WATCHDOG=y` 和 `CONFIG_SUNXI_WATCHDOG=y`，但必须先得到用户明确批准，再同步到 `tina-overlay/` 并制作新候选。
 
-只有同时满足以下条件，才可把 v5.6.2 从“候选”提升为当前验证开发基线：
+## 5. v5.6.2 历史最终通过标准
+
+以下标准用于记录 v5.6.2 从“候选”提升为验证开发基线所需的条件；v5.6.3 精确成品已完成自动 ADB 冷启动 3/3，仍需按第 2 节完成热插拔和对应关键路径回归。
 
 - 精确镜像身份和 SHA-256 正确；
 - 10 次冷启动无循环重启，10 次手动 `adb-on` 全部一次成功；
@@ -248,13 +265,14 @@ pidof adbd || true
 - PPP、DNS、NTP、HTTPS、`4g-stop` 和 ADB 共存通过；
 - TF/overlay 和重启后 ADB 默认关闭通过；
 - 所有警告、未测项和外部条件有清晰记录；
+- 软件重启至少完成 10 次，且每次都能重新启动并恢复预期 ADB 状态；
 - `CURRENT_STATE.md`、本文件和该版本 README 已按结果更新。
 
 GNSS 户外定位若因现场条件无法执行，可作为明确的剩余项，但不能写成已通过。生产安全也不能因开发验收通过而自动解决。
 
-## 6. 若 v5.6.2 失败
+## 6. 若 v5.6.2 失败（历史处置）
 
-失败后仍不得立即构建 v5.6.3。严格执行：
+以下保留 v5.6.2 阶段的失败处置流程；当前 v5.6.3 已按明确授权完成构建，但新的 `2.18-1` 或看门狗方向仍不得自动纳入下一镜像。严格执行：
 
 1. 保存完整 UART、ADB、`dmesg`、`logread`、相关 `/tmp` 与 `/overlay` 日志。
 2. 记录 `mosquito-version`、镜像 SHA-256、连接方式、失败轮次和复现率。
@@ -266,9 +284,11 @@ GNSS 户外定位若因现场条件无法执行，可作为明确的剩余项，
 
 获得明确同意前，不设置新版本号、不改固件源码、不构建、不 `pack`、不建发布目录。
 
+当前软件重启故障的候选修复范围已经缩小为 Linux 5.4 看门狗配置：设备树已有 `allwinner,sun6i-a31-wdt`，本地 `drivers/watchdog/sunxi_wdt.c` 提供 restart handler；需要在用户批准后把 `CONFIG_WATCHDOG=y`、`CONFIG_SUNXI_WATCHDOG=y` 纳入 Mosquito overlay，再执行构建和实板回归。此前完整 SDK 工作副本中的同名配置变更尚未形成成品证据。
+
 ## 7. 下一版本候选方向：晚期自动触发 ADB
 
-这一节记录已经商定的后续方向，但不表示现在可以开发或构建该镜像。必须先完成本文第 4、5 节的 v5.6.2 精确成品验收。
+这一节记录晚期自动触发 ADB 的设计边界；该方向已经按用户批准制作成 v5.6.3，且精确成品自动 ADB 冷启动已 3/3 通过，当前只剩热插拔和完整功能实板回归。本文第 4、5 节保留的是 v5.6.2 的历史验收矩阵，不能用临时 overlay 结果替代 v5.6.3 成品验收。
 
 ### 7.1 目标
 
@@ -294,7 +314,7 @@ userspace 明确就绪
 
 ### 7.3 在当前 v5.6.2 上的临时验证门槛
 
-只有 v5.6.2 精确成品基线验收通过后，才可在其可写 overlay 上设计晚期一次性触发。临时验证至少覆盖：
+用户明确要求先用临时 overlay 验证自动上电开启 ADB；该验证已完成 3 次物理断电/上电且 3/3 通过。这是 v5.6.2 可写 overlay 的 B 级证据，不等于精确 v5.6.3 成品已通过。以下 10 项是后续更高层回归清单，尚未宣称全部通过：
 
 1. USB0 预连接冷启动 10 次，每次都进入 `device`，无 `offline` 或循环重启。
 2. 系统重启 10 次，自动触发时间和结果可从日志追踪。
@@ -307,11 +327,11 @@ userspace 明确就绪
 9. 日志保存在 `/tmp` 和必要的 `/overlay/mosquito-test/`，不会写满持久存储。
 10. 重启或断电后没有遗留状态把下一次启动卡死。
 
-在当前镜像完成以上临时验证后，必须向用户汇总触发点、实现方式、原始证据、成功率、失败保护、回归结果和安全风险，然后明确询问是否制作包含晚期自动 ADB 的新镜像。
+上述临时验证结果已汇总并经用户批准，形成 v5.6.3；精确成品自动 ADB 冷启动已 3/3 通过，但仍需执行热插拔和对应功能回归，不能把临时 overlay 证据直接升级为全部成品通过。
 
 ## 8. 用户批准新镜像后的流程
 
-只有门槛满足且用户明确批准后，才按以下顺序执行：
+以下是获用户批准后制作新镜像的标准流程；本次 v5.6.3 已执行构建、打包、成品反查和发布目录归档，尚未执行烧录。
 
 1. 将已经在当前镜像验证通过的最小修复写入 `tina-overlay/`。
 2. 更新镜像版本、构建日期和板级包版本，确保三者一致。
@@ -346,4 +366,15 @@ powershell.exe -NoProfile -Command 'adb version; adb devices -l'
 
 如果只克隆了 Git 仓库而未下载 Release 附件，本地没有 `.img` 是正常现象。Agent 可以继续读代码、诊断和规划；需要烧录时才把对应附件下载到现有版本目录并校验 SHA-256。没有设备连接时，不得把源码分析写成实板验证。
 
-当前可执行的下一步只有：**验证现有 v5.6.2，或在无法连接设备时继续完善验证准备；不得自行生成新镜像。**
+当前可执行的下一步是：**继续完成 v5.6.3 精确成品的热插拔和关键路径验收；在用户确认通过前，不制作包含 `2.18-1` 的下一镜像。**
+
+## 10. 与客户端生产上线的关系
+
+2026-09-01 完成的 Windows ADB 实板演示闭环、DHT30/BQ25895 临时接口和 `BOARD_4G` 协议仿真，不构成制作新镜像或生产上线授权。生产工作必须按 `docs/PRODUCTION_ROLLOUT_PENDING.md` 分阶段执行。
+
+特别注意：
+
+- 真实阿里云生产部署和 Air780EG 4G 直传仍未执行；
+- 冷启动自动连接必须先解决生产维护通道安全边界，不能简单把 root、无认证 ADB 自动打开；
+- 自动 ADB 目前已在 v5.6.3 成品中重新构建并反查，但仍需烧录该精确成品后回归；DHT30/BQ25895 等新接口仍只在临时路径验证；
+- v5.6.3 的构建授权已经使用完毕；未来包含 `2.18-1`、看门狗或其他方向的镜像仍需用户单独批准。

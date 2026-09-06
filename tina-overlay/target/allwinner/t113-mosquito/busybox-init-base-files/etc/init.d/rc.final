@@ -1,0 +1,105 @@
+#!/bin/sh
+
+# v5.6.3 development hook: start the already validated adb-on command once
+# after Tina's late userspace initialization has mounted UDISK, loaded modules
+# and processed load_script.conf.  This is deliberately a background task so a
+# failed ADB start cannot block the UART0 rescue shell or the rest of boot.
+(
+	PERSIST_ROOT=/overlay/mosquito-test
+	PERSIST_DIR=$PERSIST_ROOT/v563-auto-adb
+	RUN_DIR=$PERSIST_DIR/runs
+	DISABLE_MARKER=$PERSIST_ROOT/disable-usb0-autostart
+	LOCK_DIR=/tmp/mosquito-v563-auto-adb.lock
+	TMP_LOG=/tmp/mosquito-v563-auto-adb.log
+	ADB_LOG=/tmp/mosquito-v563-auto-adb-command.log
+	LATEST_LOG=$PERSIST_DIR/latest.log
+	MAX_READY_WAIT=${MOSQUITO_AUTOSTART_MAX_WAIT:-120}
+
+	mkdir -p "$RUN_DIR" || exit 1
+	: > "$TMP_LOG"
+
+	BOOT_ID="$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)"
+	[ -n "$BOOT_ID" ] || BOOT_ID="uptime-$(cut -d. -f1 /proc/uptime 2>/dev/null)"
+	RUN_LOG="$RUN_DIR/$BOOT_ID.log"
+	: > "$RUN_LOG"
+
+	log()
+	{
+		echo "$*" >> "$TMP_LOG"
+		echo "$*" >> "$RUN_LOG"
+	}
+
+	finish()
+	{
+		cp "$TMP_LOG" "$LATEST_LOG" 2>/dev/null
+		exit "$1"
+	}
+
+	log "[INFO] v5.6.3 auto-adb boot_id=$BOOT_ID"
+	log "[INFO] start_uptime=$(cat /proc/uptime 2>/dev/null) max_ready_wait=${MAX_READY_WAIT}s"
+
+	# Creating this marker from UART disables automatic ADB for rescue work.
+	# Unlike the earlier one-shot experiment, it is not consumed on success:
+	# every subsequent boot is intentionally eligible for one automatic start.
+	if [ -e "$DISABLE_MARKER" ]; then
+		log "[SKIP] automatic ADB disabled by $DISABLE_MARKER"
+		finish 0
+	fi
+
+	if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+		log '[SKIP] automatic ADB was already requested during this boot'
+		finish 0
+	fi
+
+	waited=0
+	while :; do
+		UDC="$(ls /sys/class/udc 2>/dev/null | sed -n '1p')"
+		READY=yes
+		grep -q ' /overlay .* rw[, ]' /proc/mounts 2>/dev/null || READY=no
+		grep -q ' /mnt/UDISK ' /proc/mounts 2>/dev/null || READY=no
+		[ -x /usr/bin/adb-on ] || READY=no
+		[ -n "$UDC" ] || READY=no
+		[ "$READY" = yes ] && break
+		if [ "$waited" -ge "$MAX_READY_WAIT" ]; then
+			log "[FAIL] late userspace dependencies not ready after ${MAX_READY_WAIT}s UDC=${UDC:-missing}"
+			finish 1
+		fi
+		[ $((waited % 10)) -ne 0 ] || \
+			log "[INFO] waiting late userspace dependencies waited=${waited}s UDC=${UDC:-missing}"
+		sleep 1
+		waited=$((waited + 1))
+	done
+
+	log "[PASS] late userspace ready waited=${waited}s UDC=$UDC"
+	log '[INFO] invoking existing /usr/bin/adb-on once'
+	: > "$ADB_LOG"
+	MOSQUITO_USB0_MIN_UPTIME=10 MOSQUITO_USB0_MAX_WAIT=30 \
+		/usr/bin/adb-on > "$ADB_LOG" 2>&1
+	ADB_RC=$?
+	cat "$ADB_LOG" >> "$TMP_LOG"
+	cat "$ADB_LOG" >> "$RUN_LOG"
+
+	if [ "$ADB_RC" -ne 0 ]; then
+		log "[FAIL] adb-on exit_code=$ADB_RC; no retry will be attempted"
+		log "[RECOVERY] UART: : > $DISABLE_MARKER; usb0-adb-stop; adb-on"
+		finish "$ADB_RC"
+	fi
+
+	PIDS="$(pidof adbd 2>/dev/null)"
+	set -- $PIDS
+	PID_COUNT=$#
+	ENDPOINTS="$(ls /dev/usb-ffs/adb 2>/dev/null | tr '\n' ' ')"
+	BOUND="$(cat /sys/kernel/config/usb_gadget/g1/UDC 2>/dev/null)"
+	STATE="$(cat /sys/class/udc/$UDC/state 2>/dev/null)"
+	log "[INFO] adbd_pids=${PIDS:-none} pid_count=$PID_COUNT endpoints=${ENDPOINTS:-none}"
+	log "[INFO] UDC=$UDC bound=${BOUND:-none} state=${STATE:-unknown}"
+
+	if [ "$PID_COUNT" -ne 1 ] || [ ! -e /dev/usb-ffs/adb/ep1 ] || \
+		[ ! -e /dev/usb-ffs/adb/ep2 ] || [ "$BOUND" != "$UDC" ]; then
+		log '[FAIL] post-start ADB invariants were not satisfied'
+		finish 1
+	fi
+
+	log "[PASS] automatic ADB startup completed end_uptime=$(cat /proc/uptime 2>/dev/null)"
+	finish 0
+) >/dev/null 2>&1 &
