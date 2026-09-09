@@ -1,0 +1,67 @@
+#!/bin/sh
+
+CAPTURE_ID=
+FOCUS=500
+TMP_LOG="/tmp/mosquito-capture-$$.log"
+
+usage()
+{
+	echo 'Usage: mosquito-capture --id UUID [--focus 500|auto]' >&2
+}
+
+while [ "$#" -gt 0 ]; do
+	case "$1" in
+	--id)
+		[ "$#" -ge 2 ] || { usage; exit 2; }
+		CAPTURE_ID="$2"
+		shift 2
+		;;
+	--focus)
+		[ "$#" -ge 2 ] || { usage; exit 2; }
+		FOCUS="$2"
+		shift 2
+		;;
+	*)
+		usage
+		exit 2
+		;;
+	esac
+done
+
+if ! printf '%s\n' "$CAPTURE_ID" | grep -Eq \
+	'^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[1-5][0-9A-Fa-f]{3}-[89ABab][0-9A-Fa-f]{3}-[0-9A-Fa-f]{12}$'; then
+	echo '[FAIL] capture id must be a canonical UUID' >&2
+	exit 2
+fi
+
+case "$FOCUS" in
+	auto)
+		MOSQUITO_CAPTURE_ID="$CAPTURE_ID" camera-test1 > "$TMP_LOG" 2>&1
+		;;
+	*[!0-9]*|'')
+		echo '[FAIL] focus must be auto or a non-negative integer' >&2
+		exit 2
+		;;
+	*)
+		MOSQUITO_CAPTURE_ID="$CAPTURE_ID" camera-test1 "$FOCUS" > "$TMP_LOG" 2>&1
+		;;
+esac
+CAMERA_STATUS=$?
+sed '/^PHOTO=/d; /^METADATA=/d' "$TMP_LOG"
+PHOTO="$(sed -n 's/^PHOTO=//p' "$TMP_LOG" | sed -n '1p')"
+METADATA="$(sed -n 's/^METADATA=//p' "$TMP_LOG" | sed -n '1p')"
+rm -f "$TMP_LOG"
+
+if [ "$CAMERA_STATUS" -ne 0 ] || [ -z "$PHOTO" ] || [ -z "$METADATA" ]; then
+	echo 'CAPTURE_RESULT=FAILED'
+	echo "CAPTURE_ID=$CAPTURE_ID"
+	exit 1
+fi
+
+RECORD_STATUS="$(sed -n 's/^record_status=//p' "$METADATA" | sed -n '1p')"
+echo "CAPTURE_RESULT=${RECORD_STATUS:-PARTIAL}"
+echo "CAPTURE_ID=$CAPTURE_ID"
+echo "PHOTO=$PHOTO"
+echo "METADATA=$METADATA"
+[ "$RECORD_STATUS" = COMPLETE ] && exit 0
+exit 10

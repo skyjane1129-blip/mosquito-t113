@@ -1,7 +1,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=mosquito-board-test
-PKG_VERSION:=2.17
+PKG_VERSION:=2.18
 PKG_RELEASE:=1
 PKG_BUILD_DIR:=$(COMPILE_DIR)/$(PKG_NAME)
 
@@ -41,6 +41,8 @@ define Package/mosquito-board-test/install
 	$(LN) mosquito-board-test $(1)/usr/bin/gnss-test
 	$(LN) mosquito-board-test $(1)/usr/bin/sim-test
 	$(LN) mosquito-board-test $(1)/usr/bin/power-test
+	$(LN) mosquito-board-test $(1)/usr/bin/mosquito-environment
+	$(LN) mosquito-board-test $(1)/usr/bin/mosquito-power
 	$(INSTALL_BIN) ./files/usb0-status $(1)/usr/bin/
 	$(LN) usb0-status $(1)/usr/bin/usb0-test
 	$(INSTALL_BIN) ./files/usb0-adb-start $(1)/usr/bin/
@@ -48,6 +50,7 @@ define Package/mosquito-board-test/install
 	$(INSTALL_BIN) ./files/usb0-adb-stop $(1)/usr/bin/
 	$(INSTALL_BIN) ./files/camera-test $(1)/usr/bin/
 	$(INSTALL_BIN) ./files/camera-test1 $(1)/usr/bin/
+	$(INSTALL_BIN) ./files/mosquito-capture $(1)/usr/bin/
 	$(INSTALL_BIN) ./files/camera-test0 $(1)/usr/bin/
 	$(INSTALL_BIN) ./files/mosquito-version $(1)/usr/bin/
 	$(INSTALL_BIN) ./files/4g-start $(1)/usr/bin/

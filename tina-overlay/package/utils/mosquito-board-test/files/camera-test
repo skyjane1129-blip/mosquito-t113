@@ -30,6 +30,19 @@ FOCUS_LOCK_CONFIRMED=not-applicable
 PREVIEW_WARMUP_SECONDS=0
 FOCUS_SAMPLE_INTERVAL_SECONDS=0
 FOCUS_SAMPLE_LIMIT=0
+CAPTURE_ID="${MOSQUITO_CAPTURE_ID:-}"
+ENVIRONMENT_SAMPLE_FILE="/tmp/mosquito-environment-$$.sample"
+POWER_SAMPLE_FILE="/tmp/mosquito-power-$$.sample"
+ENVIRONMENT_SAMPLE_EXIT=127
+POWER_SAMPLE_EXIT=127
+RECORD_STATUS=PARTIAL
+
+[ -n "$CAPTURE_ID" ] || CAPTURE_ID="$(cat /proc/sys/kernel/random/uuid 2>/dev/null)"
+if ! printf '%s\n' "$CAPTURE_ID" | grep -Eq \
+	'^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[1-5][0-9A-Fa-f]{3}-[89ABab][0-9A-Fa-f]{3}-[0-9A-Fa-f]{12}$'; then
+	echo '[FAIL] MOSQUITO_CAPTURE_ID must be a canonical UUID' >&2
+	exit 2
+fi
 
 mkdir -p "$PERSIST_DIR"
 : > "$TMP_LOG"
@@ -66,6 +79,7 @@ finish()
 		LOCK_HELD=0
 	fi
 	cp "$TMP_LOG" "$PERSIST_DIR/camera-test.log" 2>/dev/null
+	rm -f "$ENVIRONMENT_SAMPLE_FILE" "$POWER_SAMPLE_FILE" 2>/dev/null
 }
 trap finish 0
 trap 'exit 129' 1
@@ -508,6 +522,25 @@ if [ -n "$FOCUS_REQUESTED" ] && \
 	log "[FAIL] fixed focus is not valid before capture: requested=$FOCUS_REQUESTED actual=${FOCUS_READBACK_BEFORE_CAPTURE:-invalid} focus_auto=${FOCUS_AUTO_BEFORE_CAPTURE:-invalid}; no photo was taken"
 	exit 1
 fi
+
+if mosquito-environment --machine > "$ENVIRONMENT_SAMPLE_FILE" 2>&1; then
+	ENVIRONMENT_SAMPLE_EXIT=0
+	log '[PASS] temperature and humidity sampled immediately before capture'
+else
+	ENVIRONMENT_SAMPLE_EXIT=$?
+	log "[WARN] environment sample failed with exit=$ENVIRONMENT_SAMPLE_EXIT; the photo will be preserved as PARTIAL"
+fi
+if mosquito-power --machine > "$POWER_SAMPLE_FILE" 2>&1; then
+	POWER_SAMPLE_EXIT=0
+	log '[PASS] battery voltage and charge state sampled immediately before capture'
+else
+	POWER_SAMPLE_EXIT=$?
+	log "[WARN] power sample failed with exit=$POWER_SAMPLE_EXIT; the photo will be preserved as PARTIAL"
+fi
+if [ "$ENVIRONMENT_SAMPLE_EXIT" -eq 0 ] && [ "$POWER_SAMPLE_EXIT" -eq 0 ]; then
+	RECORD_STATUS=COMPLETE
+fi
+
 if ! v4l2-ctl -d "$VIDEO" \
 	--stream-mmap=3 --stream-skip="$STREAM_SKIP" --stream-count=1 \
 	--stream-to="$PART" >> "$TMP_LOG" 2>&1 || [ ! -s "$PART" ]; then
@@ -578,7 +611,9 @@ case "$CAPTURE_YEAR" in ''|*[!0-9]*) SYSTEM_TIME_VALID=no ;; *) [ "$CAPTURE_YEAR
 UPTIME_SECONDS="$(cut -d ' ' -f 1 /proc/uptime 2>/dev/null)"
 METADATA="$OUT.txt"
 if ! {
-	echo 'metadata_version=2'
+	echo 'metadata_version=3'
+	echo "capture_id=$CAPTURE_ID"
+	echo "record_status=$RECORD_STATUS"
 	echo "photo=$OUT"
 	echo "captured_at=${CAPTURED_AT:-unknown}"
 	echo "system_time_valid=$SYSTEM_TIME_VALID"
@@ -628,6 +663,24 @@ if ! {
 	echo 'subject_distance=not-measured'
 	echo "video_node=$VIDEO"
 	echo "camera_log=$PERSIST_DIR/camera-test.log"
+	echo "environment_sample_exit=$ENVIRONMENT_SAMPLE_EXIT"
+	echo "power_sample_exit=$POWER_SAMPLE_EXIT"
+	echo
+	echo '[environment]'
+	if [ -s "$ENVIRONMENT_SAMPLE_FILE" ]; then
+		cat "$ENVIRONMENT_SAMPLE_FILE"
+	else
+		echo 'RESULT=FAIL'
+		echo 'ERROR_CODE=NO_SAMPLE_OUTPUT'
+	fi
+	echo
+	echo '[power]'
+	if [ -s "$POWER_SAMPLE_FILE" ]; then
+		cat "$POWER_SAMPLE_FILE"
+	else
+		echo 'RESULT=FAIL'
+		echo 'ERROR_CODE=NO_SAMPLE_OUTPUT'
+	fi
 	echo
 	echo '[image_version]'
 	if [ -r /etc/mosquito-version ]; then

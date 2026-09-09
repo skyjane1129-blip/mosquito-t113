@@ -391,54 +391,184 @@ static uint8_t dht_crc8(const uint8_t *data, size_t len)
 	return crc;
 }
 
-static void test_dht30(int fd)
+enum dht30_error {
+	DHT30_OK = 0,
+	DHT30_NO_ACK,
+	DHT30_MEASURE_FAILED,
+	DHT30_BUSY_TIMEOUT,
+	DHT30_CRC_MISMATCH,
+	DHT30_OUT_OF_RANGE
+};
+
+struct dht30_sample {
+	int temperature_centi_c;
+	int humidity_centi_rh;
+	int crc_ok;
+	long long sampled_uptime_ms;
+};
+
+static const char *dht30_error_code(enum dht30_error error)
+{
+	switch (error) {
+	case DHT30_OK: return "NONE";
+	case DHT30_NO_ACK: return "NO_ACK";
+	case DHT30_MEASURE_FAILED: return "MEASURE_FAILED";
+	case DHT30_BUSY_TIMEOUT: return "BUSY_TIMEOUT";
+	case DHT30_CRC_MISMATCH: return "CRC_MISMATCH";
+	case DHT30_OUT_OF_RANGE: return "OUT_OF_RANGE";
+	}
+	return "UNKNOWN";
+}
+
+static enum dht30_error read_dht30_sample(int fd, struct dht30_sample *sample)
 {
 	uint8_t status_cmd = 0x71;
 	uint8_t init_cmd[3] = { 0xbe, 0x08, 0x00 };
 	uint8_t measure_cmd[3] = { 0xac, 0x33, 0x00 };
 	uint8_t status = 0;
-	uint8_t data[7];
+	uint8_t data[7] = { 0 };
 	uint32_t raw_h, raw_t;
-	int rh100, temp100;
 	int i;
 
-	if (i2c_xfer(fd, 0x38, &status_cmd, 1, NULL, 0) < 0) {
-		result(R_FAIL, "DHT30@0x38", "no acknowledgement on TWI0");
-		return;
-	}
+	memset(sample, 0, sizeof(*sample));
+	if (i2c_xfer(fd, 0x38, &status_cmd, 1, NULL, 0) < 0)
+		return DHT30_NO_ACK;
 	usleep(10000);
 	if (i2c_xfer(fd, 0x38, NULL, 0, &status, 1) == 0 && !(status & 0x08)) {
 		/* Volatile sensor calibration command; it does not alter PCB settings. */
 		i2c_xfer(fd, 0x38, init_cmd, sizeof(init_cmd), NULL, 0);
 		usleep(10000);
 	}
-	if (i2c_xfer(fd, 0x38, measure_cmd, sizeof(measure_cmd), NULL, 0) < 0) {
-		result(R_FAIL, "DHT30@0x38", "address responds but measurement command failed");
-		return;
-	}
+	if (i2c_xfer(fd, 0x38, measure_cmd, sizeof(measure_cmd), NULL, 0) < 0)
+		return DHT30_MEASURE_FAILED;
 	for (i = 0; i < 10; ++i) {
 		usleep(20000);
 		if (i2c_xfer(fd, 0x38, NULL, 0, data, sizeof(data)) == 0 && !(data[0] & 0x80))
 			break;
 	}
-	if (i == 10) {
-		result(R_FAIL, "DHT30@0x38", "sensor stayed busy or returned no sample");
-		return;
-	}
-	if (dht_crc8(data, 6) != data[6]) {
-		result(R_FAIL, "DHT30@0x38", "sample CRC mismatch (got %02x, expected %02x)", data[6], dht_crc8(data, 6));
-		return;
-	}
+	if (i == 10)
+		return DHT30_BUSY_TIMEOUT;
+	if (dht_crc8(data, 6) != data[6])
+		return DHT30_CRC_MISMATCH;
+	sample->crc_ok = 1;
 	raw_h = ((uint32_t)data[1] << 12) | ((uint32_t)data[2] << 4) | (data[3] >> 4);
 	raw_t = ((uint32_t)(data[3] & 0x0f) << 16) | ((uint32_t)data[4] << 8) | data[5];
-	rh100 = (int)(((uint64_t)raw_h * 10000 + 524288) / 1048576);
-	temp100 = (int)(((uint64_t)raw_t * 20000 + 524288) / 1048576) - 5000;
-	if (rh100 >= 0 && rh100 <= 10000 && temp100 >= -4000 && temp100 <= 8500)
+	sample->humidity_centi_rh = (int)(((uint64_t)raw_h * 10000 + 524288) / 1048576);
+	sample->temperature_centi_c = (int)(((uint64_t)raw_t * 20000 + 524288) / 1048576) - 5000;
+	sample->sampled_uptime_ms = monotonic_ms();
+	if (sample->humidity_centi_rh < 0 || sample->humidity_centi_rh > 10000 ||
+	    sample->temperature_centi_c < -4000 || sample->temperature_centi_c > 8500)
+		return DHT30_OUT_OF_RANGE;
+	return DHT30_OK;
+}
+
+static void test_dht30(int fd)
+{
+	struct dht30_sample sample;
+	enum dht30_error error = read_dht30_sample(fd, &sample);
+
+	if (error == DHT30_OK) {
 		result(R_PASS, "DHT30@0x38", "temperature=%s%d.%02d C, humidity=%d.%02d %%RH, CRC OK",
-		       temp100 < 0 ? "-" : "", abs(temp100) / 100, abs(temp100) % 100, rh100 / 100, rh100 % 100);
-	else
-		result(R_FAIL, "DHT30@0x38", "out-of-range sample: T=%d.%02d C RH=%d.%02d%%",
-		       temp100 / 100, abs(temp100) % 100, rh100 / 100, rh100 % 100);
+		       sample.temperature_centi_c < 0 ? "-" : "",
+		       abs(sample.temperature_centi_c) / 100,
+		       abs(sample.temperature_centi_c) % 100,
+		       sample.humidity_centi_rh / 100,
+		       sample.humidity_centi_rh % 100);
+	} else {
+		result(R_FAIL, "DHT30@0x38", "measurement failed: %s", dht30_error_code(error));
+	}
+}
+
+static int print_environment_machine(void)
+{
+	struct dht30_sample sample;
+	enum dht30_error error;
+	int fd = open("/dev/i2c-0", O_RDWR);
+
+	emit("SCHEMA_VERSION=1\n");
+	emit("SENSOR=DHT30\n");
+	if (fd < 0) {
+		emit("RESULT=FAIL\nERROR_CODE=I2C_OPEN_FAILED\n");
+		return 1;
+	}
+	error = read_dht30_sample(fd, &sample);
+	close(fd);
+	if (error != DHT30_OK) {
+		emit("RESULT=FAIL\nERROR_CODE=%s\nCRC_OK=%d\n",
+		     dht30_error_code(error), sample.crc_ok);
+		return 1;
+	}
+	emit("RESULT=PASS\nERROR_CODE=NONE\n");
+	emit("SAMPLED_UPTIME_MS=%lld\n", sample.sampled_uptime_ms);
+	emit("TEMPERATURE_CENTI_C=%d\n", sample.temperature_centi_c);
+	emit("HUMIDITY_CENTI_RH=%d\n", sample.humidity_centi_rh);
+	emit("CRC_OK=%d\n", sample.crc_ok);
+	return 0;
+}
+
+static int print_power_machine(void)
+{
+	uint8_t r0b, r0c, r0e, r0f, r10, r11, r12, r13, r14;
+	static const char *const vbus_names[] = {
+		"NONE", "USB_SDP", "USB_CDP", "USB_DCP", "MAXCHARGE", "UNKNOWN", "NON_STANDARD", "OTG"
+	};
+	static const char *const charge_names[] = {
+		"NOT_CHARGING", "PRE_CHARGE", "FAST_CHARGE", "CHARGE_DONE"
+	};
+	int fd = open("/dev/i2c-0", O_RDWR);
+
+	emit("SCHEMA_VERSION=1\n");
+	emit("SENSOR=BQ25895\n");
+	if (fd < 0) {
+		emit("RESULT=FAIL\nERROR_CODE=I2C_OPEN_FAILED\n");
+		return 1;
+	}
+	if (i2c_read_reg(fd, 0x6a, 0x14, &r14) < 0) {
+		close(fd);
+		emit("RESULT=FAIL\nERROR_CODE=PART_INFO_READ_FAILED\n");
+		return 1;
+	}
+	if (bq25895_refresh_adc(fd) < 0) {
+		close(fd);
+		emit("RESULT=FAIL\nERROR_CODE=ADC_TIMEOUT\n");
+		return 1;
+	}
+	if (i2c_read_reg(fd, 0x6a, 0x0b, &r0b) < 0 ||
+	    i2c_read_reg(fd, 0x6a, 0x0c, &r0c) < 0 ||
+	    i2c_read_reg(fd, 0x6a, 0x0e, &r0e) < 0 ||
+	    i2c_read_reg(fd, 0x6a, 0x0f, &r0f) < 0 ||
+	    i2c_read_reg(fd, 0x6a, 0x10, &r10) < 0 ||
+	    i2c_read_reg(fd, 0x6a, 0x11, &r11) < 0 ||
+	    i2c_read_reg(fd, 0x6a, 0x12, &r12) < 0 ||
+	    i2c_read_reg(fd, 0x6a, 0x13, &r13) < 0) {
+		close(fd);
+		emit("RESULT=FAIL\nERROR_CODE=MONITOR_READ_FAILED\n");
+		return 1;
+	}
+	close(fd);
+	if (((r14 >> 3) & 7) != 7) {
+		emit("RESULT=WARN\nERROR_CODE=PART_NUMBER_MISMATCH\n");
+	} else if (r0c != 0) {
+		emit("RESULT=WARN\nERROR_CODE=POWER_FAULT_ACTIVE\n");
+	} else {
+		emit("RESULT=PASS\nERROR_CODE=NONE\n");
+	}
+	emit("SAMPLED_UPTIME_MS=%lld\n", monotonic_ms());
+	emit("PART_NUMBER=%u\n", (r14 >> 3) & 7);
+	emit("REVISION=%u\n", r14 & 3);
+	emit("BATTERY_MV=%u\n", 2304 + (r0e & 0x7f) * 20);
+	emit("SYSTEM_MV=%u\n", 2304 + (r0f & 0x7f) * 20);
+	emit("VBUS_GOOD=%u\n", (r11 >> 7) & 1);
+	emit("VBUS_MV=%u\n", 2600 + (r11 & 0x7f) * 100);
+	emit("POWER_SOURCE=%s\n", vbus_names[(r0b >> 5) & 7]);
+	emit("CHARGE_STATE=%s\n", charge_names[(r0b >> 3) & 3]);
+	emit("CHARGE_CURRENT_MA=%u\n", (r12 & 0x7f) * 50);
+	emit("TS_MILLI_PERCENT=%u\n", 21000 + (r10 & 0x7f) * 465);
+	emit("FAULT_REG=0x%02x\n", r0c);
+	emit("VINDPM_ACTIVE=%u\n", (r13 >> 7) & 1);
+	emit("IINDPM_ACTIVE=%u\n", (r13 >> 6) & 1);
+	emit("INPUT_LIMIT_MA=%u\n", 100 + (r13 & 0x3f) * 50);
+	return 0;
 }
 
 static void test_bq25895(int fd)
@@ -1268,6 +1398,7 @@ int main(int argc, char **argv)
 {
 	const char *program = strrchr(argv[0], '/');
 	bool air_only, gnss_only, sim_only, power_only;
+	bool environment_machine, power_machine;
 	const char *tmp_log = "/tmp/mosquito-board-test.log";
 	const char *persistent_name = "board-test.log";
 	char persistent_path[PATH_MAX];
@@ -1282,6 +1413,15 @@ int main(int argc, char **argv)
 	power_only = !strcmp(program, "power-test") ||
 		(argc == 2 && !strcmp(argv[1], "power"));
 	setvbuf(stdout, NULL, _IOLBF, 0);
+	environment_machine = !strcmp(program, "mosquito-environment");
+	power_machine = !strcmp(program, "mosquito-power");
+	if (environment_machine || power_machine) {
+		if (argc != 2 || strcmp(argv[1], "--machine")) {
+			emit("Usage: %s --machine\n", program);
+			return 2;
+		}
+		return environment_machine ? print_environment_machine() : print_power_machine();
+	}
 	if (air_only) {
 		tmp_log = "/tmp/mosquito-air-test.log";
 		persistent_name = "air-test.log";
