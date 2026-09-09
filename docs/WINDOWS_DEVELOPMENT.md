@@ -85,10 +85,18 @@ powershell -NoProfile -ExecutionPolicy Bypass -NoExit -Command ". .\scripts\Ente
 - `BoardCommandPath`：`/usr/bin:/bin`；v5.6.4 的三个业务命令均安装在 `/usr/bin`，不再搜索 `client-demo`。
 - `ApiBaseUrl`：`http://127.0.0.1:5080`。
 - `LocalDataRoot`：空值会解析为当前用户的 `%LOCALAPPDATA%\MosquitoCapture`。
-- 默认固定焦距：500；命令超时：180 秒。
+- 直连当前固定使用手动对焦，默认值为 500；自动对焦入口已禁用并标记“相机固定后验收”；命令超时为 180 秒。
 
-当前程序只加载 `appsettings.json`；虽然 `.gitignore` 排除了 `appsettings.Local.json`，代码尚未实现该文件的覆盖加载。
-需要修改本机配置时编辑实际加载的文件，避免把个人地址或凭据推送远端。配置文件不存放密码。
+需要设置本机 `DeviceId`、API 地址或其他差异时，在 `src\Mosquito.Client\appsettings.json` 同目录新建被 Git 忽略的 `appsettings.Local.json`，只写需要覆盖的属性，例如：
+
+```json
+{
+  "DeviceId": "MQ-SH-001",
+  "ApiBaseUrl": "https://capture-api.example.cn"
+}
+```
+
+程序先加载 `appsettings.json`，再以不区分大小写的属性名加载可选的 `appsettings.Local.json`；本机文件未提供的属性继续使用主配置值。开发构建会把存在的本机文件复制到运行目录，发布输出明确排除该文件。不要在任一配置文件中保存密码、访问令牌或设备密钥。
 
 普通启动会把生产 `appsettings.json` 复制到输出目录；配置文件缺失时 `AppSettings` 的代码默认值也为 `/usr/bin:/bin`。真实 WPF runner 使用独立配置，但路径值与普通启动一致。
 
@@ -110,7 +118,7 @@ API 是开发实例，InMemory 数据会随服务退出丢失；健康检查通�
 - `mosquito-capture`、`mosquito-environment`、`mosquito-power` 均精确解析到 `/usr/bin/`；`BoardCommandPath=/usr/bin:/bin`，不依赖 `/data/local/tmp/client-demo`。
 - 真实 WPF 通过 `LoginButton`、`DetectButton`、`ReadDeviceButton`、`CaptureButton` 完成检测、传感器 WARN 展示、手动焦距 500 采集、两次 pull、SQLite PendingUpload、历史和 3264×2448 预览，主机退出码 0。
 - Windows USB FriendlyName 仍带 v5.6.2 文本，`DeviceId` 仍待配置；运行时版本和直连功能已由 `mosquito-version`、metadata 及真实采集独立确认。
-- 自动对焦光学效果仍延期；真实云端认证和上传不在本次直连验收范围。
+- 自动对焦光学效果仍延期，直连界面保持禁用并提示相机固定后再验收；真实云端认证和上传不在本次直连验收范围。
 
 ## 验证结果与板端同步
 

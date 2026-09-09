@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 
 namespace Mosquito.Client.Core;
 
@@ -16,12 +17,23 @@ public sealed class AppSettings
 
     public static AppSettings Load(string path)
     {
-        var settings = File.Exists(path)
-            ? JsonSerializer.Deserialize<AppSettings>(File.ReadAllText(path), new JsonSerializerOptions
+        var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+        var values = ReadObject(path);
+        var localPath = Path.Combine(Path.GetDirectoryName(Path.GetFullPath(path))!, "appsettings.Local.json");
+        if (File.Exists(localPath))
+        {
+            foreach (var property in ReadObject(localPath))
             {
-                PropertyNameCaseInsensitive = true
-            }) ?? new AppSettings()
-            : new AppSettings();
+                var existingName = values.Select(item => item.Key)
+                    .FirstOrDefault(name => string.Equals(name, property.Key, StringComparison.OrdinalIgnoreCase));
+                if (existingName is not null)
+                {
+                    values.Remove(existingName);
+                }
+                values[property.Key] = property.Value?.DeepClone();
+            }
+        }
+        var settings = values.Deserialize<AppSettings>(options) ?? new AppSettings();
         if (string.IsNullOrWhiteSpace(settings.LocalDataRoot))
         {
             settings.LocalDataRoot = Path.Combine(
@@ -29,5 +41,15 @@ public sealed class AppSettings
                 "MosquitoCapture");
         }
         return settings;
+    }
+
+    private static JsonObject ReadObject(string path)
+    {
+        if (!File.Exists(path))
+        {
+            return new JsonObject();
+        }
+        return JsonNode.Parse(File.ReadAllText(path)) as JsonObject
+            ?? throw new JsonException($"Configuration root must be a JSON object: {path}");
     }
 }

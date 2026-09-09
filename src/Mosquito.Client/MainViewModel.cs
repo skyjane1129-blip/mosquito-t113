@@ -74,7 +74,7 @@ public sealed class MainViewModel : ObservableModel
     public bool RegistryReady { get; private set; }
     public IReadOnlyList<RemoteDevice> VisibleDevices => Devices.Where(x => District == "上海市" || x.LastLocation?.District == District).ToArray();
     public int ManualFocus { get; set; }
-    public bool UseAutofocusLock { get; set; }
+    public bool UseAutofocusLock => false;
     public string DeviceId => _settings.DeviceId ?? "待配置稳定设备编号";
     public string DeviceSerial => _settings.DeviceSerial;
     public string ApiBaseUrl => _settings.ApiBaseUrl;
@@ -211,7 +211,7 @@ public sealed class MainViewModel : ObservableModel
     }
     private Task CaptureAsync() => RunAsync(async (token, generation) =>
     {
-        var artifact = await _workflow.CaptureAndUploadAsync(UploadRoute.Windows, UseAutofocusLock ? null : ManualFocus,
+        var artifact = await _workflow.CaptureAndUploadAsync(UploadRoute.Windows, ManualFocus,
             new Progress<WorkflowProgress>(x => { if (Current(generation)) StatusMessage = x.Message; }), token, upload: false);
         if (!Current(generation)) return;
         await DirectPhoto.LoadAsync(LocalHistory.FromArtifact(artifact));

@@ -7,6 +7,7 @@ using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Windows;
+using System.Windows.Automation;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
@@ -130,6 +131,12 @@ internal static class Program
         var detectButton = (System.Windows.Controls.Button)window.FindName("DetectButton");
         var readButton = (System.Windows.Controls.Button)window.FindName("ReadDeviceButton");
         var captureButton = (System.Windows.Controls.Button)window.FindName("CaptureButton");
+        var manualFocusInput = (System.Windows.Controls.TextBox)window.FindName("ManualFocusInput");
+        var autofocusOption = (System.Windows.Controls.CheckBox)window.FindName("AutofocusOption");
+        Assert(vm.ManualFocus == 500 && manualFocusInput.Text == "500" &&
+               vm.UseAutofocusLock == false && autofocusOption.IsChecked == false && !autofocusOption.IsEnabled &&
+               autofocusOption.Content?.ToString()?.Contains("相机固定后验收", StringComparison.Ordinal) == true,
+            "real direct UI defaults to manual focus 500 and clearly disables autofocus pending camera mounting");
         vm.Username = "admin";
         password.Password = "000";
         ClickBoundButton(loginButton, vm.LoginCommand);
@@ -185,7 +192,6 @@ internal static class Program
         await SaveWindow(window, Path.Combine(output, "02-real-live-reading.png"));
 
         vm.ManualFocus = 500;
-        vm.UseAutofocusLock = false;
         Assert(vm.CaptureCommand.CanExecute(null), "manual capture button is enabled");
         ClickBoundButton(captureButton, vm.CaptureCommand);
         await UntilReal(() => vm.Busy, TimeSpan.FromSeconds(5), "manual capture operation to start");
@@ -403,6 +409,12 @@ internal static class Program
         await LoginDetectionTests.RunAsync(output, photoPath);
         vm.Username = "test"; vm.Password = "test"; vm.LoginCommand.Execute(null);
         await Until(() => vm.IsLoggedIn && !vm.Busy);
+        var manualFocusInput = (System.Windows.Controls.TextBox)window.FindName("ManualFocusInput");
+        var autofocusOption = (System.Windows.Controls.CheckBox)window.FindName("AutofocusOption");
+        Assert(vm.ManualFocus == 500 && manualFocusInput.Text == "500" &&
+               vm.UseAutofocusLock == false && autofocusOption.IsChecked == false && !autofocusOption.IsEnabled &&
+               autofocusOption.Content?.ToString()?.Contains("相机固定后验收", StringComparison.Ordinal) == true,
+            "direct UI defaults to manual focus 500 and clearly disables autofocus pending camera mounting");
         var offlineCloud = new CloudApiClient(settings, handler);
         var offlineCapture = await new CaptureWorkflow(settings, new CaptureFixture(photoPath), new(), offlineCloud, outbox)
             .CaptureAndUploadAsync(UploadRoute.Windows, 500, null, default, upload: false);
@@ -461,6 +473,23 @@ internal static class Program
         await vm.RemotePhoto.LoadAsync(handler.Records[0] with { LocalPhotoPath = photoPath });
         await SaveWindow(window, Path.Combine(output, "remote-workspace.png"));
         AssertSinglePhoto(window, "remote map workspace");
+        var map = VisualChildren<ShanghaiMap>(window).Single(x => x.IsVisible);
+        var districtSelector = VisualChildren<System.Windows.Controls.ComboBox>(map)
+            .Single(x => AutomationProperties.GetAutomationId(x) == "ShanghaiDistrictSelector");
+        var expectedDistricts = new[]
+        {
+            "上海市", "黄浦区", "徐汇区", "长宁区", "静安区", "普陀区", "虹口区", "杨浦区", "闵行区",
+            "宝山区", "嘉定区", "浦东新区", "金山区", "松江区", "青浦区", "奉贤区", "崇明区"
+        };
+        Assert(districtSelector.Items.Cast<string>().SequenceEqual(expectedDistricts),
+            "schematic map exposes Shanghai plus all 16 unique districts in stable order");
+        Assert(VisualChildren<System.Windows.Shapes.Path>(map).Count(x =>
+                   AutomationProperties.GetAutomationId(x).StartsWith("ShanghaiDistrict-", StringComparison.Ordinal)) == 16,
+            "full schematic map draws all 16 project-authored district shapes");
+        var mapNote = VisualChildren<System.Windows.Controls.TextBlock>(map)
+            .Single(x => AutomationProperties.GetAutomationId(x) == "ShanghaiMapNote");
+        Assert(mapNote.Text.Contains("项目自绘", StringComparison.Ordinal) && mapNote.Text.Contains("不代表精确边界", StringComparison.Ordinal),
+            "map identifies the project-authored schematic without third-party attribution");
         var remoteDevice = vm.SelectedDevice;
         var remotePhoto = vm.RemotePhoto.Record;
         var remoteImage = vm.RemotePhoto.Image;
@@ -479,6 +508,20 @@ internal static class Program
         window.Width = 1500; window.Height = 960;
         vm.District = "浦东新区";
         await SaveWindow(window, Path.Combine(output, "remote-district.png"));
+        Assert(VisualChildren<System.Windows.Shapes.Path>(map).Count(x =>
+                   AutomationProperties.GetAutomationId(x).StartsWith("ShanghaiDistrict-", StringComparison.Ordinal)) == 1,
+            "district selection draws only the Pudong schematic shape");
+        Assert(VisualChildren<System.Windows.Controls.Button>(map).Any(x =>
+                   AutomationProperties.GetAutomationId(x) == "ShanghaiDeviceMarker"),
+            "Pudong fixture coordinates remain visible as a device marker");
+        var resetMap = VisualChildren<System.Windows.Controls.Button>(map)
+            .Single(x => AutomationProperties.GetAutomationId(x) == "ShanghaiMapReset");
+        resetMap.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Button.ClickEvent));
+        window.UpdateLayout();
+        Assert(vm.District == "上海市" &&
+               VisualChildren<System.Windows.Shapes.Path>(map).Count(x =>
+                   AutomationProperties.GetAutomationId(x).StartsWith("ShanghaiDistrict-", StringComparison.Ordinal)) == 16,
+            "return-to-Shanghai restores the full schematic map");
         vm.Tab = 1; vm.RecordTab = 0;
         vm.RemoteHistory.Range = "近 7 天"; await vm.RemoteHistory.QueryAsync();
         Assert(vm.RemoteHistory.Rows.Count == 50 && vm.RemoteHistory.PageLabel.Contains("553"), "real WPF history binding shows 553-record query paginated at 50");

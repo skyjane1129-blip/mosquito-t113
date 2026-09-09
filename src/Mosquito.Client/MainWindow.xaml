@@ -110,8 +110,8 @@
         </DockPanel>
         <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
          <TextBlock Text="对焦值" VerticalAlignment="Center" Margin="0,0,8,0"/>
-         <TextBox Text="{Binding ManualFocus}" Width="70" Padding="8,6"/>
-         <CheckBox Content="自动对焦锁定" IsChecked="{Binding UseAutofocusLock}" VerticalAlignment="Center" Margin="12,0,0,0"/>
+         <TextBox x:Name="ManualFocusInput" Text="{Binding ManualFocus}" Width="70" Padding="8,6"/>
+         <CheckBox x:Name="AutofocusOption" Content="自动对焦（相机固定后验收）" IsChecked="{Binding UseAutofocusLock, Mode=OneWay}" IsEnabled="False" ToolTip="相机机械位置固定并完成光学验收后再开放" VerticalAlignment="Center" Margin="12,0,0,0"/>
         </StackPanel>
         <Grid Margin="0,10,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="8"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
          <Button x:Name="CaptureButton" Content="采集并保存本机" Command="{Binding CaptureCommand}" Style="{StaticResource AccentButton}" Padding="10,9"/>

@@ -1,4 +1,5 @@
 using System.Text;
+using System.Text.Json;
 using Microsoft.Data.Sqlite;
 using Mosquito.Client.Core;
 
@@ -63,6 +64,33 @@ var temporaryRoot = Path.Combine(Path.GetTempPath(), $"mosquito-client-tests-{Gu
 Directory.CreateDirectory(temporaryRoot);
 try
 {
+    var baseSettingsPath = Path.Combine(temporaryRoot, "appsettings.json");
+    var localSettingsPath = Path.Combine(temporaryRoot, "appsettings.Local.json");
+    await File.WriteAllTextAsync(baseSettingsPath, JsonSerializer.Serialize(new AppSettings
+    {
+        DeviceSerial = "BASE-SERIAL",
+        DeviceId = null,
+        ApiBaseUrl = "https://base.invalid",
+        LocalDataRoot = temporaryRoot,
+        CommandTimeoutSeconds = 91,
+        DefaultFocus = 500
+    }));
+    await File.WriteAllTextAsync(localSettingsPath, """
+        {
+          "deviceId": "MQ-SH-LOCAL-001",
+          "apiBaseUrl": "https://local.invalid"
+        }
+        """);
+    var layeredSettings = AppSettings.Load(baseSettingsPath);
+    Assert(layeredSettings.DeviceId == "MQ-SH-LOCAL-001" && layeredSettings.ApiBaseUrl == "https://local.invalid",
+        "local settings override matching base properties case-insensitively");
+    Assert(layeredSettings.DeviceSerial == "BASE-SERIAL" && layeredSettings.CommandTimeoutSeconds == 91 && layeredSettings.DefaultFocus == 500,
+        "local settings preserve base properties they do not specify");
+    File.Delete(localSettingsPath);
+    var baseOnlySettings = AppSettings.Load(baseSettingsPath);
+    Assert(baseOnlySettings.DeviceId is null && baseOnlySettings.ApiBaseUrl == "https://base.invalid",
+        "missing optional local settings leave the base configuration unchanged");
+
     var photoPath = Path.Combine(temporaryRoot, "photo.jpg");
     var metadataPath = Path.Combine(temporaryRoot, "metadata.txt");
     await File.WriteAllBytesAsync(photoPath, "photo"u8.ToArray());
@@ -115,6 +143,7 @@ finally
 
 Console.WriteLine("PASS: metadata v3 parsing and UUID integrity");
 Console.WriteLine("PASS: real sensor units without fake battery percentage");
+Console.WriteLine("PASS: optional appsettings.Local.json property overrides");
 Console.WriteLine("PASS: SQLite retry outbox state transitions");
 Console.WriteLine("PASS: UTF-8 CSV export");
 }
