@@ -2,6 +2,8 @@
 
 更新时间：2026-09-06（Asia/Shanghai）
 
+> **历史快照**：本文保留 2026-09-06 当日状态，不再作为当前分支和版本入口。2026-09-09 的权威事实见根目录 `AGENTS.md`、`docs/CURRENT_STATE.md` 和 `docs/NEXT_IMAGE.md`：板端使用 `mosquito-t113`，Windows 客户端使用同一 GitHub 仓库中的 `mosquito-windows-client` 分支；客户端权威工作树为 `C:\project\mosquito\mosquito-windows-client`。
+
 新对话接手时，先阅读根目录 `AGENTS.md`，再阅读本文、`docs/CURRENT_STATE.md` 和 `docs/NEXT_IMAGE.md`。
 
 ## 1. 当前仓库与分支

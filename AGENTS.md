@@ -99,7 +99,7 @@ cat docs/NEXT_IMAGE.md
 - Air780EG LTE 注册、PPP、DNS、NTP、HTTPS 上传和 `4g-stop`；
 - ADB 与 4G 并行运行；
 - SIM、GNSS、BQ25895 只读诊断；
-- 重启后 ADB 默认关闭以及开发安全边界。
+- v5.6.4 晚期自动 ADB、失败后的 UART/`adb-on` 救援能力以及开发安全边界。
 
 无法执行的项目必须明确标为未测，并解释原因；不得用“应该没问题”代替。
 
@@ -112,7 +112,7 @@ cat docs/NEXT_IMAGE.md
 - 不得清理用户现有修改。提交前必须检查 `git diff --check`、`git status`、脚本语法和版本引用。
 - 没有用户要求时，不自动创建提交、标签、GitHub Release 或推送远端。
 - 将某一版本设为 `main` 不等于授权生成该版本之后的新镜像。
-- Windows 客户端以后使用独立仓库和 Windows Git，不能成为本板端仓库在 NTFS 上的第二份副本。
+- Windows 客户端使用独立的 NTFS 工作树、`mosquito-windows-client` 分支和 Windows Git；它可以与板端分支共用同一个 GitHub 仓库，但不能成为本板端工作树在 NTFS 上的第二份副本。
 
 ### 新传入文件的推送确认门槛
 
@@ -167,11 +167,11 @@ Get-FileHash .\releases\mosquito-t113\<版本>\<镜像>.img -Algorithm SHA256
 
 最后向用户汇总：改了什么、没有改什么、验证了什么、未验证什么、当前风险、是否涉及新镜像，以及下一步是否需要用户授权。
 
-## 十一、下一版本 ADB 自动启动候选方向
+## 十一、当前晚期自动 ADB 的实现与回归边界
 
-以下内容是 v5.6.2 完成精确成品验收后的候选研究方向，不是当前制作新镜像的授权：
+v5.6.3 已实现晚期自动 ADB，v5.6.4 继续沿用该路径。以下约束仍然有效，也不构成制作后续镜像的授权：
 
-- 下一版本的优化目标是：保留 `dev-v5.6.2-adb-on-validated` 已验证的手动 `adb-on` 作为唯一 ADB 底层启动流程，仅在明确的“系统 userspace 已就绪”节点增加一次性自动触发。
+- 保留 `adb-on` 作为唯一 ADB 底层启动流程，只在明确的“系统 userspace 已就绪”节点自动触发一次。
 - 不得恢复 v5.5.x 在 `rc.preboot` 中提前准备、绑定或强制重绑 USB0 的实现，也不得另写一套与 `adb-on` 并行的 ConfigFS/FunctionFS 启动逻辑。
 - 自动触发失败时不得重启系统或无限重绑 UDC；必须保留 UART、`adb-on` 手动恢复入口和 `usb0-adb-stop` 停止入口，并记录可诊断日志。
-- 制作自动 ADB 新镜像前，必须先在已烧录的 v5.6.2 上临时验证晚期自动触发，并完成预连接冷启动、重启、热插拔、独立供电以及相机/4G/PPP/NTP/ADB 共存回归；全部通过后再询问用户是否制作新镜像。
+- v5.6.4 的当前剩余项是连续三次物理冷启动/UART、USB0 物理热拔插/正反插，以及 UART Root Shell 在场时的 ADB stop/start。不能用 v5.6.3 或更早版本的通过记录替代这些精确成品测试。

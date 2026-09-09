@@ -1,6 +1,6 @@
 # Mosquito Tina SDK 从 VMware 迁移到 WSL2
 
-更新时间：2026-08-31（Asia/Hong_Kong）
+更新时间：2026-09-01（Asia/Shanghai）
 
 ## 1. 目的与边界
 
@@ -21,6 +21,8 @@ GitHub 仓库：Mosquito 自研内容
 `<wsl-user>` 是占位符；下面的 shell 命令使用 `$HOME`，无需手工写入用户名。SDK 必须放在 WSL2 的 Linux 文件系统中，不要放在 `/mnt/c`、`/mnt/d` 或 GitHub 仓库内部。
 
 本次迁移只是建立构建环境，不代表授权生成新镜像。除非已经按 `AGENTS.md` 完成实板诊断门槛并取得用户明确同意，否则 Agent 不得运行 Tina `make`、`pack`，不得修改版本号或建立新发布目录。
+
+截至 2026-09-01 的迁移验收状态：迁移包已经解压到 `/home/janelinux/work/mosquito/tina-t113`，目录占用约 15 GB；`build/envsetup.sh`、`.config`、`.repo` 和 ARM 交叉工具链已检查存在，Mosquito 板测程序已经使用恢复后的工具链交叉编译通过。当时尚未执行完整 Tina `make`、`pack` 和新镜像生成；后续版本构建状态以 `docs/CURRENT_STATE.md` 和对应 release README 为准。
 
 ## 2. VMware 迁移包身份
 
