@@ -196,9 +196,16 @@ PASS=6  FAIL=0  WARN=1  MANUAL=0
 - 成品不包含adbd或USB0 ADB自动启动链接，也没有`rc.preboot`自动入口。
 - 成品中的adbd、4G启停和USB0脚本通过Shell语法检查，且哈希与SDK源码一致。
 
-## 剩余非阻断项
+## 2026-09-01 临时自动 ADB 回归与已知重启故障
+
+在当前已烧录的精确 v5.6.2 实板上，临时一次性晚期自动 ADB 钩子在物理 Reset 后成功调用既有 `adb-on`，达到单个 `adbd`、FunctionFS `ep0/ep1/ep2` 和 UDC `configured`。该钩子仅存在于可写 overlay，不属于本成品。
+
+随后执行 `adb reboot` 时设备下线但 900 秒内未重新上线；UART 记录 `reboot: Restarting system` 后 `Reboot failed -- System halted`，按物理 Reset 才恢复。证据目录为 `build/test-runs/20260901-174914+0800-auto-adb/`。复位后读取的内核配置未启用 `CONFIG_POWER_RESET`、`CONFIG_WATCHDOG`，设备树已有 Allwinner 看门狗节点；因此软件重启目前是已知故障，不得记为 v5.6.2 通过。启用 `CONFIG_WATCHDOG=y` 和 `CONFIG_SUNXI_WATCHDOG=y` 只是待批准候选，尚未写入仓库 overlay、构建、打包或烧录。
+
+## 剩余项与已知阻断
 
 - GNSS真实室外定位仍需在有开阔天空视野的环境下完成。
 - BQ25895只读测试曾报告`REG0C watchdog=1`，但自动检查`FAIL=0`，未观察到对ADB、相机或4G的影响。
 - 冷启动且尚未联网时系统时间可能为1970年；运行`4g-start`后NTP已验证可恢复正确时间。在校时前拍照会在元数据中标记`system_time_valid=no`。
 - 开发ADB为root、无认证，只适合受控调试环境。
+- `adb reboot` 在 v5.6.2 上会停在 `Reboot failed -- System halted`；必须先完成看门狗候选修复及实板回归，才能重新评估软件重启。

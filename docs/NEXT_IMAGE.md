@@ -1,10 +1,41 @@
 # Mosquito 下一镜像计划
 
-更新时间：2026-09-05（Asia/Shanghai）
+更新时间：2026-09-09（Asia/Shanghai）
 
-## 1. 当前决定
+## 0. 2026-09-09 v5.6.4 烧录后最新决定
 
-**v5.6.3 已按用户明确授权制作，并完成精确成品自动 ADB 冷启动 3/3 验收。** 本版本严格采用 v5.6.2 的 `mosquito-board-test 2.17-1` 基线，只加入 userspace 就绪后的自动调用既有 `adb-on`；下一步是完成热插拔及关键路径回归。
+用户已经烧录 `dev-v5.6.4-client-direct`。运行身份、2.18-1、metadata v3、source state、原生 `/usr/bin` 命令及关键文件哈希均与发布镜像一致，不依赖 `/data/local/tmp/client-demo`。
+
+发布镜像仍为：
+
+```text
+releases/mosquito-t113/2026-09-08-dev-v5.6.4-client-direct/mosquito-t113-dev-v5.6.4-client-direct.img
+size=11,508,736 bytes
+sha256=01f95c8008a0f3957ecaf8f4f9fd5f4bb92ad3cd4c0c0dddc27e95e53a0e251b
+rootfs_sha256=42922be01976e488cc1b1d32ab83ed151fa2c555b65fee172a8ebd85caa9fbb9
+```
+
+本镜像只新增本阶段已验证的直连功能：`mosquito-capture`、`mosquito-environment`、`mosquito-power`、相机实现、板测 C 程序、2.18-1 包装和 metadata v3 版本声明。新增 `mosquito-capture-4g`、`mosquito-upload-4g`、云配置、板级包新增 `jsonfilter` 依赖以及 Watchdog/GNSS/CPUFreq/CPUIdle 均排除；云端和新增 4G 直传继续延期。
+
+**当前状态是精确成品已烧录，板端直连子集、Windows WPF 回归和客户端生产命令路径修正均通过。** 已完成环境/电源 10 次、手动焦距 500 三次、metadata/哈希/传感器关联、ADB pull/push、非法 UUID、受控 `PARTIAL`、资源清理和真实 GUI 全流程；普通启动配置与代码默认值均已改为 `/usr/bin:/bin`，生产配置只读实板检测通过。旧的客户端生成/发布目录不得直接分发，应从修正后的源码重新生成。下一步只补 3 次物理冷启动与 UART、USB0 物理热拔插/正反插，以及 UART Root Shell 在场时的 ADB stop/start。自动对焦光学画质继续等相机固定；云端、远程和新增 4G 仍延期。本阶段没有依据继续制作下一个镜像。下文 `0A` 及后续章节保留构建前计划和历史背景；冲突时以本节为准。
+
+## 0A. 2026-09-08 构建前历史快照（不可作为当前执行入口）
+
+整体进度、代码问题及本地分支事实见 [`REVIEW_2026-09-08_PROGRESS.md`](REVIEW_2026-09-08_PROGRESS.md)。v5.6.3 精确成品已烧录并有自动 ADB 冷启动 3/3 记录；后文保留的“尚未烧录”等表述属于过期步骤，不应覆盖这一事实。2026-09-08 又在该精确成品上完成直连候选的临时实板测试，证据位于 `build/test-runs/20260908-144221+0800-client-direct/`。
+
+- 直连候选已临时完成环境 10/10 `PASS`、电源 10/10 可读（8 `PASS` / 2 `WARN`）、固定焦距 3 次和自动锁焦 3 次采集、metadata v3/JPEG/UUID/传感器关联、12 个文件 ADB 拉取哈希以及单张照片 push/pull 往返哈希验证。带远端退出 marker 的第二组环境/电源 10 次补测得到相同的 10/10 和 8/2 分布。
+- `mosquito-capture` 首轮重复输出 `PHOTO=`/`METADATA=`；板端候选已用最小过滤修复，并在重新部署后的手动 3 次、自动 3 次协议回归中确认每个 marker 恰好出现一次。受控故障注入另验证 `PARTIAL`、远端退出码 10 和数据保留。
+- 构建前自动锁焦控制流程 3/3 完成稳定判断、关闭 AF、锁焦写入和回读，但 3/3 实际图像明显失焦；以 220 和 500 为起点的两次约 30 秒诊断均收敛到 280。此项后来按用户决定改为等待相机固定后验光学画质。
+- 构建前确认 Windows `adb.exe shell` 不可靠透传板端命令退出码，并用带内 marker 取得 0、1、2、10。该适配和真实 WPF GUI 联调后来均已完成并通过。
+- 当时还计划做 v5.6.3 热插拔及 4G/ADB 共存回归。最新直连范围已把新增 4G 延期，并在 GUI 通过后制作 v5.6.4；软件重启故障仍未纳入。
+- 客户端/云端另有两个已在隔离测试复现的修复待办：上传部分成功后的逐对象幂等恢复；取消/进程中断后 `Uploading` 队列的恢复。现有测试通过不能代替这两项验收。
+- 真实云联调还应验证 OSS 对象正文的完整性检查、签名上传及中断重试；当前仅比较自定义 SHA-256 元数据不能等同于计算正文哈希。
+- 2.18-1、环境/电源机器接口、metadata v3 和新采集命令仍属于未集成候选；客户端演示临时部署不能代替干净成品验收。
+- 本次核对仅补充进度文档，不构成新镜像、硬件修改、云部署、提交或推送授权。
+
+## 1. v5.6.3 历史决定
+
+**v5.6.3 已按用户明确授权制作，并完成精确成品自动 ADB 冷启动 3/3 验收。** 本版本严格采用 v5.6.2 的 `mosquito-board-test 2.17-1` 基线，只加入 userspace 就绪后的自动调用既有 `adb-on`。其后直连候选完成 Windows GUI 联调，自动光学按用户决定延期，并已经形成 v5.6.4 静态通过候选。
 
 本次 v5.6.3 明确：
 
@@ -32,7 +63,7 @@ sha256=7f763d7795c9c0f4a8e3be5e904ec454f39db73cb34eb603af5f45bc587568a7
 
 开发主机迁移已完成到“SDK 恢复和板测程序交叉编译可用”阶段：完整 SDK 位于 `/home/janelinux/work/mosquito/tina-t113`，当前占用约 15 GB。本轮已在受控低并行配置下完成完整 Tina `make -j1`、官方 `pack` 和成品静态反查；迁移步骤和边界见 `docs/WSL2_SDK_MIGRATION.md`。WSL 期间未出现 OOM、磁盘耗尽或 I/O 错误，后续仍应保持低并行和日志重定向。
 
-## 2. 当前验收目标
+## 2. v5.6.3 历史验收目标
 
 验收需要继续回答一个问题：在不依赖临时 overlay 的情况下，v5.6.3 精确成品除自动 ADB 冷启动 3/3 已通过外，能否完成以下关键路径闭环：
 
@@ -51,6 +82,13 @@ TF 冷启动
 
 验收结果必须来自本目录中的精确 v5.6.3 `.img`，不能用“v5.6.2 临时 overlay 已通过”代替。
 
+2026-09-08 的临时部署已经证明：`mosquito-environment`、`mosquito-power`、`mosquito-capture`、metadata v3、唯一结果 marker、ADB 拉取和哈希闭环在当前 v5.6.3 实板上可以工作。这属于临时候选证据，下一镜像准入前仍必须完成：
+
+1. 修正或重新限定自动锁焦策略，并在固定物距和光线下以实际图像清晰度重复验收；
+2. Windows 客户端使用带内 marker 取得远端退出码，完成真实 GUI 的设备检测、手动/自动采集、`PARTIAL` 和文件拉取联调；
+3. 完成 v5.6.3 热插拔以及本阶段要求的相邻功能回归；
+4. 只选择本阶段已验证的直连子集进入镜像，不把仍延期的 `mosquito-capture-4g`、`mosquito-upload-4g`、云配置或仅由其需要的依赖一并视为已验证。
+
 软件重启的当前证据位于 `build/test-runs/20260901-174914+0800-auto-adb/`，包括 UART、轮询和 `/proc/config.gz`。物理 Reset 恢复后的自动 ADB 结果不能抵消 `adb reboot` 的失败。
 
 用户已收到有源陶瓷GNSS天线，并要求优先完成 v5.6.2 的真实室外 GNSS 定位。聚焦交接、天线边界、首轮命令、隐私要求和失败分类见 `docs/HANDOFF_2026-08-26_V562_GNSS.md`。现有记录仍是 15×15/18×18 天线未定位；该 GNSS 诊断方向不属于 v5.6.3，本次不把 GNSS 修复纳入镜像。
@@ -67,13 +105,13 @@ TF 冷启动
 - 备份目标 TF 卡中的照片、日志和其他数据。
 - 保留 `2026-08-14-boot-ok` 恢复镜像。
 
-PowerShell 校验候选镜像：
+PowerShell 校验当前 v5.6.4 候选镜像：
 
 ```powershell
-Get-FileHash .\releases\mosquito-t113\2026-09-04-dev-v5.6.3-usb0-adb-autostart\mosquito-t113-dev-v5.6.3-usb0-adb-autostart.img -Algorithm SHA256
+Get-FileHash .\releases\mosquito-t113\2026-09-08-dev-v5.6.4-client-direct\mosquito-t113-dev-v5.6.4-client-direct.img -Algorithm SHA256
 ```
 
-必须得到 `7f763d77...7568a7`。不一致时立即停止，不得烧录。
+必须得到 `01f95c8008a0f3957ecaf8f4f9fd5f4bb92ad3cd4c0c0dddc27e95e53a0e251b`。不一致时立即停止，不得烧录。
 
 ### 3.2 烧录安全
 
@@ -331,7 +369,7 @@ userspace 明确就绪
 
 ## 8. 用户批准新镜像后的流程
 
-以下是获用户批准后制作新镜像的标准流程；本次 v5.6.3 已执行构建、打包、成品反查和发布目录归档，尚未执行烧录。
+以下是获用户批准后制作新镜像的标准流程；本次 v5.6.4 已执行构建、打包、成品反查、发布目录归档和烧录，且板端直连子集与 Windows WPF 成品回归已经通过。
 
 1. 将已经在当前镜像验证通过的最小修复写入 `tina-overlay/`。
 2. 更新镜像版本、构建日期和板级包版本，确保三者一致。
@@ -360,13 +398,13 @@ cat AGENTS.md
 cat docs/CURRENT_STATE.md
 cat docs/NEXT_IMAGE.md
 cat docs/DEVELOPMENT_WORKFLOW.md
-cat releases/mosquito-t113/2026-08-26-dev-v5.6.2-adb-on-validated/README.md
+cat releases/mosquito-t113/2026-09-08-dev-v5.6.4-client-direct/README.md
 powershell.exe -NoProfile -Command 'adb version; adb devices -l'
 ```
 
 如果只克隆了 Git 仓库而未下载 Release 附件，本地没有 `.img` 是正常现象。Agent 可以继续读代码、诊断和规划；需要烧录时才把对应附件下载到现有版本目录并校验 SHA-256。没有设备连接时，不得把源码分析写成实板验证。
 
-当前可执行的下一步是：**继续完成 v5.6.3 精确成品的热插拔和关键路径验收；在用户确认通过前，不制作包含 `2.18-1` 的下一镜像。**
+当前可执行的下一步是：**保持现有 v5.6.4，不制作新镜像；补做 3 次物理冷启动/UART、USB0 物理热拔插与 Type-C 正反插，并在 UART Root Shell 可用时验证 ADB stop/start。自动对焦光学画质等相机固定后再验。**
 
 ## 10. 与客户端生产上线的关系
 
@@ -376,5 +414,5 @@ powershell.exe -NoProfile -Command 'adb version; adb devices -l'
 
 - 真实阿里云生产部署和 Air780EG 4G 直传仍未执行；
 - 冷启动自动连接必须先解决生产维护通道安全边界，不能简单把 root、无认证 ADB 自动打开；
-- 自动 ADB 目前已在 v5.6.3 成品中重新构建并反查，但仍需烧录该精确成品后回归；DHT30/BQ25895 等新接口仍只在临时路径验证；
-- v5.6.3 的构建授权已经使用完毕；未来包含 `2.18-1`、看门狗或其他方向的镜像仍需用户单独批准。
+- 自动 ADB 已在 v5.6.3 精确成品完成冷启动 3/3；DHT30/BQ25895 和直连采集接口已经在 v5.6.4 精确成品完成板端与 Windows WPF 回归；v5.6.4 自身的三次物理冷启动和 USB 物理恢复仍待补；自动对焦光学画质按用户决定待相机固定后验；
+- 用户对本次 v5.6.4 直连镜像的构建授权已经执行。未来加入 Watchdog、云端、新增 4G、GNSS 或其他范围时，仍需按 `AGENTS.md` 重新核对门槛和授权。

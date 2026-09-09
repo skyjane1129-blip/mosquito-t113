@@ -14,7 +14,7 @@
 
 ## 当前版本
 
-当前候选是 [`2026-08-26-dev-v5.6.2-adb-on-validated`](2026-08-26-dev-v5.6.2-adb-on-validated/README.md)。其修复逻辑在 v5.6.1 可写 overlay 上完成实板验证，精确 v5.6.2 成品仍需烧录后完成最终冷启动验收。完整当前事实和下一步分别见：
+当前已烧录版本是 [`2026-09-08-dev-v5.6.4-client-direct`](2026-09-08-dev-v5.6.4-client-direct/README.md)。精确成品的板端直连子集和 Windows WPF 真实按钮闭环已通过；三次物理冷启动/UART、USB 物理热拔插及 UART 在场时的 ADB stop/start 仍待补测。完整当前事实和下一步分别见：
 
 - [`docs/CURRENT_STATE.md`](../../docs/CURRENT_STATE.md)
 - [`docs/NEXT_IMAGE.md`](../../docs/NEXT_IMAGE.md)
@@ -43,7 +43,9 @@
 | [`2026-08-25-dev-v5.5.3-usb0-controlled-rebind`](2026-08-25-dev-v5.5.3-usb0-controlled-rebind/README.md) | 成品候选，实板循环验收未完成 |
 | [`2026-08-25-dev-v5.6-manual-adb`](2026-08-25-dev-v5.6-manual-adb/README.md) | FunctionFS 只有 ep0，不建议烧录 |
 | [`2026-08-25-dev-v5.6.1-adbd-background-hotfix`](2026-08-25-dev-v5.6.1-adbd-background-hotfix/README.md) | 后台 adbd 热修候选 |
-| [`2026-08-26-dev-v5.6.2-adb-on-validated`](2026-08-26-dev-v5.6.2-adb-on-validated/README.md) | 当前候选，精确成品冷启动待验收 |
+| [`2026-08-26-dev-v5.6.2-adb-on-validated`](2026-08-26-dev-v5.6.2-adb-on-validated/README.md) | 2.17-1 手动 ADB 历史基线 |
+| [`2026-09-04-dev-v5.6.3-usb0-adb-autostart`](2026-09-04-dev-v5.6.3-usb0-adb-autostart/README.md) | 晚期自动 ADB 成品；精确镜像冷启动 3/3 通过 |
+| [`2026-09-08-dev-v5.6.4-client-direct`](2026-09-08-dev-v5.6.4-client-direct/README.md) | 当前已烧录；板端直连子集与 Windows WPF 实板闭环通过 |
 
 版本目录是档案，不是推荐列表。烧录任何版本前必须先读该目录 README；`dev-v1` 明确禁止烧录。
 

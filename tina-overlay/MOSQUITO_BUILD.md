@@ -2,6 +2,8 @@
 
 本目标用于 [`hardware/pcb/netlist/Netlist_PCB1_2026-07-29.tel`](../hardware/pcb/netlist/Netlist_PCB1_2026-07-29.tel) 对应的自研 PCB。当前目标已启用 TF/SDC0、UART0、USB1 Host、UVC/V4L2 摄像头、Air780EG LTE/GNSS、I2C 和板级测试工具。由于 SDK 自带的 OP-TEE 二进制无法通过该板 T113-S3 的硬件信息检查，本目标不打包 OP-TEE，由 Linux 直接启动第二个 Cortex-A7 核心。
 
+当前实板已烧录 `dev-v5.6.4-client-direct`（板级包 `2.18-1`、metadata v3）。2026-09-09 的板端直连子集与 Windows WPF 真实按钮闭环已通过；自动对焦光学画质、三次物理冷启动、USB 物理热拔插和 UART 在场时的 ADB stop/start 仍待补测。当前身份、证据和后续门槛以 [`../docs/CURRENT_STATE.md`](../docs/CURRENT_STATE.md)、[`../docs/NEXT_IMAGE.md`](../docs/NEXT_IMAGE.md) 和当前版本 [`README.md`](../releases/mosquito-t113/2026-09-08-dev-v5.6.4-client-direct/README.md) 为准。
+
 SDC0 是承载系统和根文件系统的启动 TF 卡。当前 PCB 的卡座检测触点在 Linux 中始终报告未插卡，因此设备树将 SDC0 标记为 `non-removable`，启动时直接枚举介质，不依赖 PF6 卡检测。此配置不支持系统运行期间的 TF 热插拔；若后续确认并修复 CD 硬件，可恢复 `cd-gpios`。
 
 ## 编译和打包
@@ -57,10 +59,9 @@ ls -l /dev/mmcblk0*
 mount
 echo persistent >/root/overlay-test
 sync
-reboot
 ```
 
-重启后 `/root/overlay-test` 仍存在，表示 `rootfs_data` 的 ext4 overlay 工作正常。
+v5.6.4 没有纳入已知软件重启故障的修复，不要在没有 UART 和物理恢复条件时直接执行 `reboot`。保存 UART 后使用物理 Reset 或完全断电再上电，启动完成后执行 `cat /root/overlay-test`；输出 `persistent` 表示 `rootfs_data` 的 ext4 overlay 工作正常。
 `/proc/cpuinfo` 应列出 `processor 0` 和 `processor 1`，且 `nproc` 应输出 `2`。
 
 ## 外设与开发命令
@@ -70,6 +71,9 @@ camera-test0
 camera-test
 camera-test1
 camera-test1 500
+mosquito-environment --machine
+mosquito-power --machine
+mosquito-capture --id 00000000-0000-4000-8000-000000000001 --focus 500
 air-test
 gnss-test
 sim-test
@@ -92,7 +96,9 @@ which sz
 
 `air-test`、`sim-test` 和 `pppd` 会独占同一个 Air780EG UART，PPP 在线时不要同时运行这些诊断命令。拨号及上传日志分别位于 `/tmp/mosquito-4g-ppp.log` 和 `/overlay/mosquito-test/photo-upload.log`。
 
-dev-v5.6.2取消v5.5.x的USB0 ADB自动启动。系统正常进入UART0 Root Shell后只运行`adb-on`，命令会等待内核uptime和UDC就绪，随后准备FunctionFS、显式后台启动无认证root adbd并绑定USB0；30秒内依赖仍未就绪会明确失败。v5.6.1实板发现`/etc/init.d/adbd`内的`pidof adbd`会把脚本自身误判为已经运行的守护进程，导致FunctionFS只有ep0；v5.6.2改用FunctionFS ep1判断运行状态，并把运行时PID文件放到`/tmp`。相同修复已在v5.6.1系统的可写overlay上实板验证：冷启动后一条`adb-on`、ADB完全停止后恢复、USB0热拔插、Root Shell、push/pull和大文件照片传输均通过；精确v5.6.2成品仍需烧录复核。4G脚本同时修复BusyBox `modprobe`对已加载模块返回255以及pppd linkname PID文件包含“PID+ppp0”两行的问题，PPP、DNS、HTTPS、NTP和`4g-stop`也已在该临时修复环境中与ADB共存验证。Windows端确认`adb devices -l`出现状态为`device`的`MOSQUITO-T113-DEV`后即可使用`adb shell/push/pull`。重启后ADB重新保持关闭，`usb0-adb-start`和`usb0-adb-stop`只保留作底层诊断。
+当前 v5.6.4 沿用 v5.6.3 的晚期自动 ADB 路径：系统 userspace 就绪后调用既有底层启动流程，Windows 端出现状态为 `device` 的 `MOSQUITO-T113-DEV` 后即可使用 `adb shell/push/pull`。`adb-on` 保留为 UART 救援入口，`usb0-adb-start` 和 `usb0-adb-stop` 只作底层诊断。当前成品的 shell、push 和 pull 已通过；物理 USB 热拔插以及 stop/start 因需确保 UART 恢复通道在场，仍待补测。v5.6.2 阶段形成的 FunctionFS ep1 运行状态判断、`/tmp` PID 文件、PPP 重复加载和两行 PID 文件修复继续保留。
+
+v5.6.4 原生提供 `/usr/bin/mosquito-capture`、`/usr/bin/mosquito-environment` 和 `/usr/bin/mosquito-power`。手动焦距 500 的三次实板采集均完成，生成 metadata v3，并通过 UUID、JPEG 大小/SHA-256/3264×2448 尺寸、同次传感器及 ADB 拉取校验。自动模式的命令和数据协议保留，光学画质等相机固定后再验。
 
 运行 `mosquito-version` 可读取 `/etc/mosquito-version`，确认当前镜像和板级软件包版本。
 
@@ -100,7 +106,7 @@ dev-v5.6.2取消v5.5.x的USB0 ADB自动启动。系统正常进入UART0 Root She
 
 - CPU 启动频率固定为 720 MHz，核心电源按 PCB 固定 0.95 V 建模。
 - 启动包不含 OP-TEE，不提供 TEE 可信应用、安全存储或基于 OP-TEE 的安全功能。
-- USB摄像头、Air780EG 和 BQ25895 只读电源诊断已提供测试命令；DHT30、EA3056 以及真正的电池荷电百分比仍需完成最终业务程序集成。精确 SOC 需要额外电量计或经过标定的整机估算模型。
+- USB 摄像头、Air780EG、DHT30 环境读取和 BQ25895 只读电源诊断已提供业务命令；DHT30 已随 metadata v3 完成直连实板验证。EA3056 和真正的电池荷电百分比仍需完成最终业务程序集成；精确 SOC 需要额外电量计或经过标定的整机估算模型。
 - 显示、触摸和音频内核组件已裁掉；无线功能不在当前Mosquito镜像范围内。
 - `rootfs` 固定为 TF 第 5 分区，即 `/dev/mmcblk0p5`。
 - `boot` 预留 8 MiB，`rootfs_data` 预留 64 MiB；`UDISK` 使用 TF 卡剩余空间。

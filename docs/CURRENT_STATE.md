@@ -1,10 +1,40 @@
 # Mosquito 当前状态
 
-更新时间：2026-09-05（Asia/Shanghai）
+更新时间：2026-09-09（Asia/Shanghai）
 
 本文只记录已有证据支持的事实。新 Agent 接手时应先读根目录 `AGENTS.md`，再读本文和 `docs/NEXT_IMAGE.md`。
 
-## 1. 当前结论
+## 0. 2026-09-09 v5.6.4 烧录后直连版最新状态
+
+用户已经使用 PhoenixCard 将 `dev-v5.6.4-client-direct` 烧入 TF 卡。运行时身份精确为构建日期 `2026-09-08`、板级包 `2.18-1`、source state `client-direct-bb7b92a-worktree`、metadata v3；`mosquito-capture`、`mosquito-environment`、`mosquito-power` 均来自原生 `/usr/bin`，`/data/local/tmp/client-demo` 不存在，实板关键文件哈希与最终镜像静态审计相同。
+
+板端直连子集回归结果为 `PASS_BOARD_DIRECT_SUBSET`：环境 10/10 PASS；电源 10/10 可读，其中 9 PASS、1 WARN (`FAULT_REG=0x80`)；手动焦距 500 三次均 COMPLETE；metadata v3、UUID、唯一 marker、3264×2448、JPEG 字节数/SHA、同次传感器、8 个 ADB 拉回文件、非法 UUID 远端退出 2、受控 `PARTIAL` 远端退出 10、ADB push/pull 和资源清理均通过。证据为 `build/test-runs/20260909-105100+0800-v564-exact-image-board/`。
+
+Windows 最新源码随后直接针对该精确 v5.6.4 成品完成真实 WPF 四按钮回归，结果 PASS、进程退出码 0：Login、Detect、Read、Capture、实时电源 WARN、手动焦距 500、两次 ADB pull、严格 metadata 校验、本机 SQLite、历史及当前/历史预览均通过，采集 ID 为 `74dd2db1-5f7d-485e-96bb-8a2428d17cec`。证据为 `build/test-runs/20260909-111101+0800-v5.6.4-windows-real/`。
+
+真实 WPF 通过后又发现普通启动配置仍优先搜索已删除的 `/data/local/tmp/client-demo`。Windows Agent 已把生产 `appsettings.json` 和代码默认值统一改为 `/usr/bin:/bin`，并同步客户端说明；Release 构建、6 组 Core 测试、模拟 WPF、语义校验及使用生产配置原文件的只读实板检测均为退出码 0。该检测确认 `Connected=true`、`CaptureReady=true`、v5.6.4、metadata v3 和三个板端命令存在。73 个归档文件哈希全部通过，证据为 `build/test-runs/20260909-115342+0800-windows-command-path/`。旧的 runtime-specific/publish 生成目录仍可能保留历史配置，分发前必须从修正后的源码重新生成，不能复用旧目录。
+
+当前结论是：**v5.6.4 精确成品已经烧录，板端直连子集、Windows WPF 实板闭环和生产命令路径修正均通过。** 尚未观察 3 次物理冷启动/UART，也未执行物理 USB 热拔插和 ADB stop/start；后者因板端没有 `nohup`/`setsid`，无法保证杀掉当前 `adbd` 后自动恢复，已安全跳过并保留证据。自动对焦光学画质等相机固定后再验。Windows USB FriendlyName 仍带 v5.6.2 文本、稳定 `DeviceId` 未配置、板端 wall clock 无效，均不影响本轮直连数据闭环但仍需后续处理。下文较早的“未烧录”“Windows GUI 未测”等记录均为历史快照，与本节冲突时以本节为准。
+
+## 0A. 2026-09-08 项目核对补充（构建前历史快照）
+
+本次进度核对详见 [`REVIEW_2026-09-08_PROGRESS.md`](REVIEW_2026-09-08_PROGRESS.md)。本节补充当前本地事实；后文与旧交接中的分支、未提交和未烧录描述须按日期理解。
+
+- 板端当前为 `mosquito-t113` / `bb7b92a`，`main` 仍为 `cdf51dd`，工作区继续保留未提交的 2.18-1 候选。Windows 客户端已于 9 月 7 日提交为 `mosquito-windows-client` / `a9b8b4e`；本轮只读快照中暂存区为空、24 个已跟踪修改、33 个未跟踪文件，其 origin 与板端指向同一 GitHub URL。云服务仍无提交、无 origin。以上只核对本地 Git 和跟踪引用，未在线查询远端。
+- v5.6.3 / 2.17-1 已有精确成品自动 ADB 冷启动 3/3 记录。2026-09-08 又在该精确成品上临时部署直连候选并完成实板测试；候选仍未进入成品镜像，完整回归仍未完成，本轮没有制作镜像。
+- Windows WPF Release 构建零警告零错误；客户端核心测试和云端 SmokeTests 通过；18 个板端 Shell 文件语法检查通过。
+- 隔离测试复现两项客户端/云端恢复缺口：同一本地对象重复上传抛出 `IOException`；中断后遗留的 SQLite `Uploading` 记录重新初始化后不进入当前待重试查询。代码尚未修复。
+- 源码检查发现 OSS 路径比较自定义 SHA-256 元数据，尚未证明正文哈希具备与本地存储相同的验证。本次未测试真实 OSS。
+- 当前 Git overlay 和 SDK 板型配置均未启用 `CONFIG_WATCHDOG`、CPUFreq 或 CPUIdle。客户端新采集命令及 metadata v3 仍未进入 v5.6.3。
+- 直连候选临时部署在 `/data/local/tmp/client-demo`。部署后的 `mosquito-board-test`、`camera-test`、`camera-test1`、`mosquito-capture` SHA-256 分别为 `77502f1b29c692888cb41929c2f0ee4e2b9835c17f0d1b4210f52dd6fb0062fb`、`640c3a6327a8bc46513a6eb459e63466803d24ce27afc96f4ec72e5a92cac7d4`、`79ec77c005a2910d274e99c04c46868b9e4bfb2a79e64b612732fafc76c5f462`、`877390ec31ef75cb242ac90ddf484d6341fceb9bc8405e68ec3056dae1e06db5`；原生 `/usr/bin` 中仍没有三个新业务命令，`mosquito-version` 仍如实报告成品 `MOSQUITO_PHOTO_METADATA=2`。
+- DHT30 独立读取及带远端退出标记的补测均为 10/10 `PASS`。BQ25895 两组各 10 次均返回完整可解析数据，每组均为 8 次 `PASS`、2 次 `WARN`；警告均为 `POWER_FAULT_ACTIVE` / `FAULT_REG=0x80`，命令远端退出码仍为 0。
+- 首轮采集发现 `mosquito-capture` 透传内部 `camera-test` 的 `PHOTO=`、`METADATA=` 后又输出一次相同 marker。工作区候选采用最小修复，只过滤内部这两个 marker，再在末尾各输出一次；重新临时部署后，固定焦距 500 的 3 次和自动锁焦的 3 次协议回归均只有唯一 marker，并全部通过结构化校验。
+- 上述 3+3 采集均生成 3264×2448 JPEG、metadata v3、匹配的 UUID、JPEG 长度/SHA-256 以及同一次拍摄的环境和电源段；12 个远端文件与 ADB 拉回文件的 SHA-256 全部一致。另有一次受控电源故障注入验证 `PARTIAL`、远端退出码 10、照片和 metadata 保留；一张照片的 ADB push/pull 往返哈希也一致。
+- 当前 Windows `adb.exe shell` 进程退出码不会可靠透传板端 shell 的退出码；`false` 的板端退出码 1 需要通过输出中的 `__MOSQUITO_REMOTE_EXIT__=1` 才能识别。成功采集、无效 UUID 和受控 `PARTIAL` 已分别记录远端 0、2、10，因此 Windows 直连流程必须解析带唯一前缀的带内退出码。
+- 自动锁焦 3/3 在控制层均完成启用 AF、稳定窗口判断、关闭 AF、写入和回读锁焦，但人工查看 3 张图像均明显失焦。以 220 和 500 为起点的两轮约 30 秒诊断都很快收敛并长期停在 280，说明“数值稳定/回读一致”不能作为光学清晰度通过条件；当前自动锁焦图像验收失败。
+- 本轮没有运行 Windows WPF GUI，也没有完成 v5.6.3 的热插拔、4G 共存及成品内置候选复测，因此尚不满足下一镜像准入门槛。完整证据位于 `build/test-runs/20260908-144221+0800-client-direct/`。
+
+## 1. 历史结论（截至 v5.6.3；当前状态以第 0 节为准）
 
 - GitHub 仓库：`https://github.com/skyjane1129-blip/mosquito-t113.git`。
 - 开发环境已采用 Windows + WSL2 混合架构：板端仓库、Tina SDK 和编译输出位于 WSL2 ext4，Windows 负责 ADB、UART、PhoenixCard 和少量产物暂存。完整 Tina SDK 已恢复到 `/home/janelinux/work/mosquito/tina-t113`，板测 C 程序交叉编译已通过；2026-09-04 已用低并行方式完成 v5.6.3 的完整 Tina 镜像构建和官方 `pack`。
@@ -12,7 +42,7 @@
 - 当前实板已由用户烧录并启动 `dev-v5.6.3-usb0-adb-autostart`、板级包 `mosquito-board-test 2.17-1`；连续 3 次精确成品冷启动的自动 ADB、Windows `device`、版本身份和 root 身份均通过。当前未提交分支仍保留板级包 `2.18-1` 候选及其他生产方向脏改动，但它们没有进入 v5.6.3。
 - 当前首选成品：`releases/mosquito-t113/2026-09-04-dev-v5.6.3-usb0-adb-autostart/mosquito-t113-dev-v5.6.3-usb0-adb-autostart.img`；自动 ADB 冷启动已 3/3 通过，摄像头、4G、热插拔等完整功能回归仍待验收。
 - v5.6.2 的 ADB 与 4G 修复曾在已运行的 v5.6.1 系统可写 overlay 上完成实板验证；v5.6.2 成品本身已完成构建、打包、SquashFS 反查和本地 SHA-256 校验，但尚缺“烧录这一精确成品后的最终冷启动验收”。
-- 因此当前状态是“v5.6.3 已构建、已打包、已静态反查，等待精确成品烧录验收”的开发主线候选，不是野外生产稳定版；2.18-1、看门狗、`adb reboot`、GNSS 和生产云方向仍未纳入 v5.6.3。
+- 该历史阶段的结论是“v5.6.3 精确成品已烧录，自动 ADB 冷启动 3/3 通过，直连板端候选已临时完成数据协议验证，但自动光学和 Windows GUI 尚待处理”。随后 GUI 已通过、自动光学已改为等待相机固定，且直连子集已进入 v5.6.4 候选；v5.6.3 本身仍不包含 2.18-1、看门狗、`adb reboot`、GNSS 和生产云方向。
 - WSL2 Agent 已通过固定的 Windows `adb.exe` 连接 `MOSQUITO-T113-DEV`，完成环境、电源、拍照、ADB 拉取以及 Windows 客户端到本地云 API 的实板闭环。新增命令仅临时部署在 `/data/local/tmp/client-demo`，不代表当前成品镜像已包含这些功能。
 - 开发主机已完成从 VMware SDK 到 WSL2 SDK 的数据迁移和交叉编译验证。GitHub 仍只保存 Mosquito 自研仓库；完整 Tina SDK、工具链、下载缓存、构建输出和实际 `.img` 不进入 Git。
 - 2026-08-31 已从 VMware 中的现有 `tina-t113/` SDK 根目录生成 WSL2 私下迁移归档 `/tmp/tina-t113-sdk-vm-snapshot-2026-08-31.tar.zst`，排除主机相关历史 `out/` 与 `logs/`；归档大小 `10,207,332,418` bytes，SHA-256 为 `87b179f5aabae86b51df020a6f32b63a1df67a66530e7a04aad0d150b0007bc0`，`sha256sum -c` 和 `tar --zstd -tf` 完整遍历均通过。2026-09-01 SDK 已恢复到 WSL2 ext4，当前占用约 15 GB，关键目录和交叉工具链存在，板测程序交叉编译通过；2026-09-04 已进一步完成低并行 Tina 构建和官方 `pack`。该 SDK 仍禁止加入 Git 或公开分发，操作说明见 `docs/WSL2_SDK_MIGRATION.md`。
@@ -42,7 +72,7 @@
 | C | 源码静态检查、完整构建、`pack`、成品反查或 SHA-256 通过 |
 | D | 待验证、仅有设计或源码推断 |
 
-v5.6.3 当前总体为 **B+C**，尚未达到整版 A；v5.6.2 是其 2.17-1 历史基线。
+v5.6.4 的**直连子集**当前为 **A+C**：精确成品已完成 C 级构建/反查，并已烧录完成板端与 Windows WPF 实板闭环。整版重复启动和 USB 物理恢复仍未达到 A；不能把直连子集通过扩展为整机全功能或生产通过。
 
 ## 3. 硬件基线
 
@@ -56,8 +86,8 @@ v5.6.3 当前总体为 **B+C**，尚未达到整版 A；v5.6.2 是其 2.17-1 历
 | 摄像头电源 | PE0/CAM_EN，GPIO 偏移 128 |
 | 蜂窝/定位 | Air780EG LTE/GNSS，共用 `/dev/ttyS1` |
 | 电源诊断 | BQ25895，可读电池/系统/VBUS/充电和故障寄存器；不是电量计 |
-| 调试 | UART0 115200 8N1；USB0 手动 root ADB；ZMODEM 救援 |
-| 当前未完成硬件项 | DHT30 新接口尚未进入成品镜像；EA3056 业务集成；精确 SOC；低功耗/RTC 唤醒；生产级安全维护通道 |
+| 调试 | UART0 115200 8N1；USB0 晚期自动 root ADB，`adb-on` 为 UART 救援入口；ZMODEM 救援 |
+| 当前未完成硬件项 | v5.6.4 的 3 次物理冷启动/UART与 USB 物理恢复；自动对焦固定场景验收；EA3056；精确 SOC；低功耗/RTC 唤醒；生产级安全维护通道 |
 
 重要约束：PCB 的 TF 卡检测信号状态不可靠，SDC0 在设备树中按 `non-removable` 处理；运行时不支持 TF 热插拔。SDK 自带 OP-TEE 二进制无法通过本板硬件信息检查，当前启动包不包含 OP-TEE。
 
@@ -78,58 +108,53 @@ v5.6.3 当前总体为 **B+C**，尚未达到整版 A；v5.6.2 是其 2.17-1 历
 ## 5. 当前成品身份与可追溯性
 
 ```text
-MOSQUITO_IMAGE=dev-v5.6.3-usb0-adb-autostart
-MOSQUITO_BUILD_DATE=2026-09-04
-MOSQUITO_BOARD_PACKAGE=2.17-1
-MOSQUITO_SOURCE_STATE=auto-adb-rc-final-cdf51dd
+MOSQUITO_IMAGE=dev-v5.6.4-client-direct
+MOSQUITO_BUILD_DATE=2026-09-08
+MOSQUITO_BOARD_PACKAGE=2.18-1
+MOSQUITO_SOURCE_STATE=client-direct-bb7b92a-worktree
+MOSQUITO_PHOTO_METADATA=3
 ```
 
 成品信息：
 
 | 字段 | 值 |
 | --- | --- |
-| 文件 | `mosquito-t113-dev-v5.6.3-usb0-adb-autostart.img` |
+| 文件 | `mosquito-t113-dev-v5.6.4-client-direct.img` |
 | 大小 | 11,508,736 bytes |
-| SHA-256 | `7f763d7795c9c0f4a8e3be5e904ec454f39db73cb34eb603af5f45bc587568a7` |
+| SHA-256 | `01f95c8008a0f3957ecaf8f4f9fd5f4bb92ad3cd4c0c0dddc27e95e53a0e251b` |
 | 格式 | Allwinner/PhoenixCard 七分区整卡镜像 |
 | 烧录方式 | PhoenixCard“启动卡 / Startup” |
 | 禁止方式 | 普通 `dd`、Etcher |
 
-成品静态检查记录显示：低并行 `make -j1` 和官方 `pack` 成功；最终 `.img` 中的 SquashFS 已提取；提取结果与构建 `rootfs.img` 一致；成品包含 userspace 就绪后调用 `adb-on` 的 `/etc/init.d/rc.final` 以及 `/usr/bin/adb-on -> usb0-adb-start`，不包含旧 `/usr/bin/adb_on`、`rc.preboot` 早期入口或 `2.18-1` 候选内容。
+成品静态检查记录显示：低并行 `make -j1` 和官方 `pack` 成功；最终 `.img` 中的 SquashFS 与构建 `rootfs.img` 一致。成品保留 v5.6.3 的自动 ADB 路径，并正式包含 2.18-1、`mosquito-capture`、环境/电源命令和 metadata v3；烧录后关键文件哈希与该静态审计一致。
 
 ## 6. 功能状态矩阵
 
 | 功能 | 状态 | 等级 | 说明 |
 | --- | --- | --- | --- |
-| TF 启动、UART0、双核、rootfs | 已有实板基线 | A（历史） | `2026-08-14-boot-ok` 是明确恢复点；v5.6.2 精确成品仍需冷启动复核 |
+| TF 启动、双核、rootfs | v5.6.4 已成功启动一次 | A（单次运行）/D（3次冷启动与UART） | 运行身份和根文件系统命令已验证；本轮没有保存 Boot0 UART，也没有观察连续 3 次物理冷启动 |
 | 可写 overlay | 已验证 | A（历史） | 开发和临时修复依赖 `/overlay`；新成品仍要做持久化回归 |
-| USB1/UVC 摄像头 | 已有实拍 | A（继承） | 3264×2448 MJPEG、自动闪光、120 帧、顺序文件、同步与断电流程已有实板使用记录 |
-| 自动锁焦与完整元数据 | 已打包并被后续版本继承 | B/C | 焦距回读、元数据字段已有实现；v5.6.2 精确成品需执行 `camera-test0/1` 回归 |
+| USB1/UVC 摄像头 | v5.6.4 手动模式实板/WPF 通过 | A+C（直连子集） | 手动焦距 500 三次板端采集和一次真实 WPF 采集均完成 3264×2448、metadata、拍后断电和清理 |
+| 自动锁焦与完整元数据 | metadata v3 成品通过；自动光学待固定后验 | A（metadata/手动）/B（自动控制历史）/D（自动光学） | v5.6.4 的 metadata v3 已实板/WPF验证；本轮未运行自动模式，不声明自动画质通过 |
+| Windows 直连板端协议 | v5.6.4 真实 WPF GUI 与生产配置检测通过 | A（直连子集） | 登录、检测、读取、手动采集、远端退出码、WARN、ADB 拉取、SQLite、历史和预览均通过；普通启动 PATH 已固定为 `/usr/bin:/bin` |
 | UART ZMODEM | 已验证 | A（历史） | 文本和 JPEG 的 `rz/sz` 实传记录来自 dev-v4 |
-| USB0 `adb-on` / v5.6.3 自动 ADB | v5.6.3 精确成品冷启动 3/3 通过，临时 overlay 3/3 | A（冷启动 3/3）/B/C | Windows 显示 `device`，版本和 `Uid: 0 0 0 0` 正确；热插拔和完整功能回归仍待做 |
-| ADB stop/start、热拔插 | 临时修复实板通过 | B/C | 完全停止后恢复、独立供电热拔插和 PID 保持已有记录 |
-| ADB push/pull | 临时修复实板通过 | B/C | 包括大文件照片传输；精确 v5.6.2 仍待复核 |
+| USB0 `adb-on` / 自动 ADB | v5.6.4 当前启动在线；重复启动待补 | A（当前一次）/D（v5.6.4三次冷启动） | Windows 唯一 `device`、Uid 0、UDC configured、精确版本正确；v5.6.3 历史冷启动为 3/3，不能替代本版重复测试 |
+| ADB stop/start、热拔插 | 历史临时修复通过，v5.6.4 待补 | B（历史）/D（当前精确成品） | 本轮没有 UART 条件；因缺少安全后台恢复机制，没有停止当前 adbd。物理热拔插/正反插也未做 |
+| ADB push/pull | v5.6.4 实板通过 | A（直连子集） | 8 个采集文件远端/拉回哈希一致；另有一张 469,056-byte 照片完成 push/pull 与字节级 `cmp` |
 | LTE/PPP/DNS/NTP/HTTPS | 临时修复实板通过 | B/C | v5.6.1 overlay 验证，包含已加载模块和双行 PID 文件修复 |
 | ADB 与 4G 共存 | 临时修复实板通过 | B/C | 4G 运行期间 ADB 持续在线已有记录 |
-| 软件重启（`adb reboot`） | 已知故障 | A（当前现象）/D（修复待验） | v5.6.2 实板 UART 报 `Reboot failed -- System halted`；物理 Reset 才能恢复。候选为内置 `sunxi_wdt`，尚未写入 overlay 或构建 |
+| 软件重启（`adb reboot`） | v5.6.2 已知故障；v5.6.4 未复验 | A（v5.6.2）/D（v5.6.4） | v5.6.2 实板 UART 报 `Reboot failed -- System halted`；v5.6.4 没有纳入看门狗修复，不得假定已解决。物理 Reset 才能可靠恢复 |
 | SIM 诊断 | 已实现 | B/C | 默认遮挡 ICCID；与 PPP 共用 UART，不能并发 |
 | GNSS | 15×15/18×18 mm天线均未定位 | A（当前现象）/D（定位通过待验） | 15×15最多4颗/CN0 25–32；暂按18×18 R1的最后一段仅1颗/CN0 21–28；均0颗参与定位、`fix=0 mode=1` |
-| BQ25895 | 临时新接口实板可读 | A（临时部署）/D（成品） | 10/10 返回有效电压和充电状态；一次 `FAULT_REG=0x80` 警告；BQ25895 不是电量计，不输出虚构百分比 |
-| DHT30 | 临时新接口实板通过 | A（临时部署）/D（成品） | 10/10 温湿度读取通过，尚未写入成品镜像 |
-| EA3056 | 未完成业务集成 | D | 不属于 v5.6.2 已验收能力 |
+| BQ25895 | v5.6.4 实板可读且 WPF 展示通过 | A（直连子集） | 正式 10 次为 9 PASS / 1 WARN；WPF 实时读取显示 `FAULT_REG=0x80`。BQ25895 不是电量计 |
+| DHT30 | v5.6.4 实板通过 | A（直连子集） | 10/10 PASS、CRC=1，WPF 独立读取及照片 sidecar 关联均通过 |
+| EA3056 | 未完成业务集成 | D | 不属于 v5.6.4 当前已验证的直连范围 |
 | CPUFreq/CPUIdle/RTC 唤醒 | 待开发与测量 | D | 见 `docs/低功耗讨论备忘.md` |
 | 生产安全 | 不通过 | 明确限制 | 当前 root、无认证 ADB 仅适合受控开发环境 |
 
 ## 7. 当前使用路径
 
-v5.6.2 的历史使用路径是冷启动后 ADB 保持关闭，再由 UART0 Root Shell 运行：
-
-```sh
-mosquito-version
-adb-on
-```
-
-Windows PowerShell：
+v5.6.4 在 userspace 就绪后自动启动 USB0 ADB。Windows PowerShell 先确认只有一台目标设备且状态为 `device`：
 
 ```powershell
 adb kill-server
@@ -138,11 +163,12 @@ adb devices -l
 adb shell mosquito-version
 ```
 
-设备必须显示 `MOSQUITO-T113-DEV device`，不能是 `offline`。摄像头与联网主路径：
-
-v5.6.3 的目标路径是 userspace 就绪后自动执行一次同一 `adb-on`；烧录精确成品后仍需在 Windows 端用 `adb devices -l`、`adb shell id` 和 `adb shell mosquito-version` 验证。
+设备必须显示唯一的 `MOSQUITO-T113-DEV device`，不能是 `offline`；`mosquito-version` 必须显示 v5.6.4、2.18-1 和 metadata v3。自动 ADB 失败时，才在 UART0 Root Shell 运行 `adb-on` 救援。当前直连与既有联网命令包括：
 
 ```sh
+mosquito-environment --machine
+mosquito-power --machine
+mosquito-capture --id 00000000-0000-4000-8000-000000000001 --focus 500
 camera-test0
 camera-test
 camera-test1
@@ -179,7 +205,8 @@ photo-upload 'https://接收端地址' '/mnt/UDISK/mosquito-test/camera/照片.j
 | `2026-08-25-dev-v5.6-manual-adb` | FunctionFS 只有 ep0，已知问题，不建议烧录 |
 | `2026-08-25-dev-v5.6.1-adbd-background-hotfix` | 后台启动修复成品，完整一命令流程当时仍待验收 |
 | `2026-08-26-dev-v5.6.2-adb-on-validated` | 2.17-1 历史基线；修复逻辑实板通过，精确成品冷启动待验收 |
-| `2026-09-04-dev-v5.6.3-usb0-adb-autostart` | 当前候选；`make -j1`、官方 `pack`、SquashFS 静态反查通过；临时 overlay 3/3、精确成品自动 ADB 冷启动 3/3 通过，完整功能回归待验收 |
+| `2026-09-04-dev-v5.6.3-usb0-adb-autostart` | 上一已烧录基线；精确成品自动 ADB 冷启动 3/3 通过，直连新命令当时仅以临时路径验证 |
+| `2026-09-08-dev-v5.6.4-client-direct` | 当前已烧录直连候选；完整构建/官方 `pack`/反查通过，板端直连子集和精确成品 Windows WPF 通过；3 次物理冷启动/UART与 USB 物理恢复待补 |
 
 每一行的完整身份、哈希、构建检查和当时的验收边界，以对应目录中的 `README.md` 为准。
 
@@ -195,19 +222,18 @@ photo-upload 'https://接收端地址' '/mnt/UDISK/mosquito-test/camera/照片.j
 
 普通 `git clone` 不会取得 `.img`。Windows 只做源码开发和 Agent 接续不受影响；需要烧录时，必须另行下载对应 Release 附件到相同版本目录并校验哈希。
 
-## 10. 当前阻断项与风险
+## 10. 当前剩余门槛、延期项与风险
 
-1. **精确成品尚未完成最终实板闭环**：v5.6.3 自动 ADB 冷启动已 3/3 通过，但不能仅凭这一项结果标为整版稳定。
-2. **开发 ADB 不安全**：root、无认证，仅适合受控开发；不能把自动打开这一维护入口直接作为生产方案。
-3. **系统时间**：离线冷启动可能停在 1970；当前演示客户端使用 Windows 拍摄中点 UTC 兼容，生产仍需可信校时策略。
-4. **真实 4G 直传未验证**：`BOARD_4G` 只有协议仿真，没有生产 HTTPS API、正式设备密钥和 Air780EG 真实蜂窝链路证据。
-5. **生产云未部署**：阿里云 ECS、PostgreSQL、私有 OSS、RAM Role、域名/HTTPS、监控和备份恢复均未执行。
-6. **GNSS**：15×15 mm天线室外R1/R2分别最多3颗和4颗、C/N0仅25–27，均0颗参与定位；用户拼接文本的最后一段暂按18×18 R1记录，则仅1颗、C/N0 21–28且仍未定位。下一步不再用尺寸判断，应先唯一保存18×18原始日志，断电复查RF2/IPEX扣接和天线方向，再做UART-only/ADB停止的抗干扰对照；仍弱时测量GNSS开启/关闭时RF2有源偏置是否约3.3 V/0 V，并用已知正常天线或开发板做交叉验证。不制作新镜像。
-7. **BQ25895 警告与 SOC**：实板曾见 `FAULT_REG=0x80`；当前数据可用但需继续记录。BQ25895 不是电量计，精确剩余百分比尚未解决。
-8. **客户端仍是演示发行物**：尚未完成代码签名、安装包、统一身份认证、终端策略和客户现场验收。
-9. **第三方依赖**：GitHub 不包含 Tina SDK、工具链、PhoenixCard 或厂商许可内容。
-10. **许可**：仓库尚未声明开源许可证；公开可见不等于允许重新分发第三方内容。
-11. **Git/发布未执行**：板端、云端和客户端改动都没有得到用户提交/推送授权；新文件必须先盘点。
+1. **启动与 USB 物理回归未完成**：v5.6.4 已烧录且直连/WPF 通过，但仍需观察 3 次物理冷启动、UART 启动日志、USB0 物理热拔插和 Type-C 正反插。
+2. **自动对焦光学待验**：协议与控制保留；相机尚未固定，按用户决定等固定目标、物距和光线后再验，不阻断本版烧录回归中的手动焦距路径。
+3. **电源告警需继续观察**：v5.6.4 正式 10 次采样中出现 1 次 `FAULT_REG=0x80`，另一次基础读取也出现相同 WARN；客户端已正确显示。BQ25895 不是电量计，不能给出精确 SOC。
+4. **Windows 身份显示待整理**：稳定 `DeviceId` 仍为空；USB FriendlyName 仍是历史字符串 `Mosquito T113 v5.6.2 adb-on validated`，但 `mosquito-version` 和 metadata 均已确认实际为 v5.6.4。
+5. **开发 ADB 不安全**：root、无认证，仅适合受控开发；生产维护通道仍需单独设计。
+6. **系统时间**：采集仍可能报告 `system_time_valid=no`；当前依赖 UUID、板端 uptime 和 Windows 主机时间关联，生产需可信校时。
+7. **明确延期**：真实云、对象存储、Air780EG 新增 4G 直传、GNSS、Watchdog/`adb reboot`、EA3056、CPUFreq/CPUIdle 均未纳入 v5.6.4。
+8. **工程与发布**：代码签名、安装包、统一身份认证、终端策略和客户现场验收尚未完成；Tina SDK/工具链不进入 Git，仓库许可仍待明确。
+9. **ADB stop/start 仍待 UART 条件**：本轮只读预检发现板端没有 `nohup`/`setsid`，无法安全保证停止 `adbd` 后的延迟恢复任务存活，因此没有执行 stop/start；需在 UART Root Shell 可用时再测。`adb reboot` 已知问题同样未执行。
+10. **Git 同步边界**：已验证的板端直连源码与版本资料归入 `mosquito-t113`，Windows 客户端归入同一远程仓库的 `mosquito-windows-client` 分支；延期且未验证的新增 4G/云脚本继续留在稳定提交之外。每次上传仍须按 `AGENTS.md` 重新盘点新增文件并核对远端分支。
 
 完整生产待办、验收条件、建议顺序和授权边界见 `docs/PRODUCTION_ROLLOUT_PENDING.md`。
 
@@ -222,3 +248,4 @@ photo-upload 'https://接收端地址' '/mnt/UDISK/mosquito-test/camera/照片.j
 - 临时 overlay 证据：在当前 v5.6.2 实板上完成 3 次物理断电/上电，均在约 12.2 秒内自动出现 ADB `device`、单个 `adbd`、FunctionFS `ep0/ep1/ep2` 和 UDC `configured`。
 - 验收边界：上述 3/3 是 v5.6.2 可写临时 overlay 的 B 级证据；精确 v5.6.3 又完成 3 次冷启动 A 级验证，但仍需热插拔和完整功能回归。
 - v5.6.3 明确不包含板级包 `2.18-1` 候选、看门狗、`adb reboot` 修复、GNSS、生产云/安全改动；这些脏改动仍是后续候选，未被本次构建吸收。
+- 2026-09-08 在该精确 v5.6.3 上临时部署 2.18-1 直连子集后，环境/电源读取、手动与自动控制、metadata/JPEG/UUID/传感器关联、ADB 拉取及往返哈希均形成实板证据；重复 marker 已修复。随后 Windows WPF 真实按钮联调通过，并已形成 v5.6.4 静态通过候选；自动光学画质按用户决定等相机固定后再验。

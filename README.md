@@ -14,6 +14,8 @@ Mosquito 是基于全志 T113-S3 的嵌入式 Linux 监测终端项目。目前�
 
 当前 `main` 是集成开发基线，不等同于生产稳定版。普通 Git 克隆不包含被忽略的 `.img` 或第三方 Tina SDK。板端仓库、Tina SDK 和编译输出放在 WSL2 ext4，并只由 WSL Git 写入；Windows 继续负责 ADB、USB/UART、PhoenixCard 和少量产物暂存。Windows ChatGPT 应用中的 WSL2 Agent 与 PowerShell 启动的 WSL2 Codex CLI 是同一套开发架构的两种入口。
 
+当前实板运行的是 `dev-v5.6.4-client-direct`（板级包 `2.18-1`、metadata v3）。2026-09-09 已完成板端直连子集和 Windows WPF 真实按钮闭环：设备识别、状态读取、手动焦距 500 拍照、温湿度/电源与照片关联、ADB 拉取、SQLite 历史和预览均通过；客户端普通启动路径也已固定为 `/usr/bin:/bin` 并完成生产配置实板检测。自动对焦的控制协议保留，光学画质按当前相机尚未固定的实际情况暂缓验收；三次物理冷启动、USB 物理热拔插和 UART 在场时的 ADB stop/start 仍待补测。详见 [`docs/CURRENT_STATE.md`](docs/CURRENT_STATE.md) 和当前版本 [`README.md`](releases/mosquito-t113/2026-09-08-dev-v5.6.4-client-direct/README.md)。
+
 从 VMware Ubuntu 向 WSL2 迁移完整 Tina SDK 时，另见
 [`docs/WSL2_SDK_MIGRATION.md`](docs/WSL2_SDK_MIGRATION.md)。该流程只迁移本地构建环境；第三方 SDK、工具链、下载缓存、构建输出和实际 `.img` 仍不得进入 Git。
 
@@ -22,7 +24,7 @@ Mosquito 是基于全志 T113-S3 的嵌入式 Linux 监测终端项目。目前�
 - 主控：Allwinner T113-S3，双核 Cortex-A7，128 MiB DDR3
 - 启动与存储：TF 卡，7 分区 PhoenixCard 启动镜像
 - 摄像头：Fifine K436，USB UVC，VID:PID `3142:0046`
-- 图像：3264×2448 MJPEG，自动对焦、自动曝光、自动白平衡
+- 图像：3264×2448 MJPEG，自动曝光、自动白平衡；支持手动焦距和自动对焦控制，自动对焦光学画质待相机固定后验收
 - 摄像头电源：PE0/CAM_EN（GPIO 偏移128）
 - 蜂窝与定位：Air780EG LTE/GNSS
 - 传感器与电源：DHT30、BQ25895、EA3056
@@ -32,7 +34,7 @@ Mosquito 是基于全志 T113-S3 的嵌入式 Linux 监测终端项目。目前�
 
 - Tina Linux 5.4.61 从 TF 卡稳定启动
 - USB1 Host 与 UVC/V4L2 摄像头枚举
-- 一条命令完成摄像头上电、120帧自动对焦预热、闪光拍照、TF 卡同步和断电
+- `mosquito-capture` 一条命令完成摄像头上电、手动焦距 500、闪光拍照、metadata v3、TF 卡同步和断电；自动模式暂不声明光学画质通过
 - 照片依次保存且不会覆盖已有文件
 - UART 双向 ZMODEM 原始二进制传输
 - Air780EG SIM/LTE 注册、UART PPP、DNS、HTTPS JPEG 上传全链路验证
@@ -89,7 +91,7 @@ power-test
 
 ## 串口传输
 
-开发镜像上电后默认关闭 USB0 ADB。系统进入 UART0 Root Shell 后先运行一条 `adb-on`，Windows 安装 Google 官方 Platform-Tools 后即可使用：
+当前 v5.6.4 开发镜像在系统 userspace 就绪后自动启动 USB0 ADB。Windows 安装 Google 官方 Platform-Tools 后可直接检查；若自动启动失败，可在 UART0 Root Shell 运行 `adb-on` 进行救援：
 
 ```sh
 adb-on
@@ -138,7 +140,7 @@ arm-openwrt-linux-muslgnueabi-
 
 - `target/allwinner/t113-mosquito`：目标板与根文件系统配置
 - `device/config/chips/t113/configs/mosquito`：DTS、内核和分区配置
-- `package/utils/mosquito-board-test`：板级诊断、摄像头和手动 USB0 ADB 工具
+- `package/utils/mosquito-board-test`：板级诊断、直连采集、摄像头和 USB0 ADB 工具
 - `lichee/.../sun8iw20p1_mosquito_defconfig`：Mosquito U-Boot 配置
 
 将 `tina-overlay/` 中的文件按原相对路径覆盖到已有 Tina T113 SDK 后，参考 [`MOSQUITO_BUILD.md`](tina-overlay/MOSQUITO_BUILD.md) 构建。
@@ -148,12 +150,12 @@ WSL2 中应把 GitHub 仓库与完整 SDK 分开放在 Linux 文件系统，先�
 
 ## 镜像
 
-镜像为 Allwinner/PhoenixCard 格式，不是普通 `dd` 磁盘镜像。当前开发候选版本为 `dev-v5.6.2-adb-on-validated`：开机保持ADB关闭，进入UART0 Root Shell后只需运行`adb-on`。该版本包含在v5.6.1系统可写overlay上实机验证通过的adbd FunctionFS启动、USB0热拔插、ADB stop/start、PPP重复加载和两行PID文件修复；精确v5.6.2成品仍需烧录后完成最终冷启动确认。
+镜像为 Allwinner/PhoenixCard 格式，不是普通 `dd` 磁盘镜像。当前已烧录版本为 `dev-v5.6.4-client-direct`，文件位于 [`releases/mosquito-t113/2026-09-08-dev-v5.6.4-client-direct/`](releases/mosquito-t113/2026-09-08-dev-v5.6.4-client-direct/)，SHA-256 为 `01f95c8008a0f3957ecaf8f4f9fd5f4bb92ad3cd4c0c0dddc27e95e53a0e251b`。板端直连子集和 Windows WPF 实板闭环已通过；仍需补做三次物理冷启动、USB 物理热拔插及 UART 在场时的 ADB stop/start，不能据此声明整机或生产验收完成。
 
 已知会导致开机重启的 `dev-v1` 禁止烧录。烧录会重建目标 TF 卡分区，操作前必须备份。
 
 ## 安全说明
 
-当前开发镜像只在串口手动运行`adb-on`后启用root、无认证USB0 ADB，仅适合受控开发环境，不适合直接部署到野外生产环境。正式生产镜像必须关闭此维护入口或加入认证机制。
+当前开发镜像会自动启用 root、无认证 USB0 ADB，仅适合受控开发环境，不适合直接部署到野外生产环境。正式生产镜像必须关闭此维护入口或加入认证机制。
 
 本仓库暂未声明开源许可证；未经许可，不代表可重新分发第三方 SDK、芯片厂商工具链或硬件资料。
