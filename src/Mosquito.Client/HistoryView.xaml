@@ -1,0 +1,44 @@
+<UserControl x:Class="Mosquito.Client.HistoryView" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" xmlns:local="clr-namespace:Mosquito.Client">
+    <Grid>
+        <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+        <Border Style="{StaticResource Card}" Padding="16" Margin="0,0,0,12">
+            <WrapPanel>
+                <StackPanel Margin="0,0,12,0"><TextBlock Text="设备编号 · 留空查询全部" Style="{StaticResource FieldLabel}"/><TextBox Text="{Binding Device, UpdateSourceTrigger=PropertyChanged}" Width="190"/></StackPanel>
+                <StackPanel Margin="0,0,12,0"><TextBlock Text="时间范围" Style="{StaticResource FieldLabel}"/><ComboBox ItemsSource="{Binding Ranges}" SelectedItem="{Binding Range}" Width="100"/></StackPanel>
+                <StackPanel Margin="0,0,12,0"><TextBlock Text="开始日期（北京时间）" Style="{StaticResource FieldLabel}"/><DatePicker SelectedDate="{Binding From}" Width="145"/></StackPanel>
+                <StackPanel Margin="0,0,12,0"><TextBlock Text="结束日期（含当日）" Style="{StaticResource FieldLabel}"/><DatePicker SelectedDate="{Binding To}" Width="145"/></StackPanel>
+                <StackPanel Margin="0,0,12,0"><TextBlock Text="记录状态" Style="{StaticResource FieldLabel}"/><ComboBox ItemsSource="{Binding Statuses}" SelectedItem="{Binding Status}" Width="110"/></StackPanel>
+                <Button Content="查询" Command="{Binding QueryCommand}" Style="{StaticResource AccentButton}" VerticalAlignment="Bottom" Margin="0,20,8,0"/>
+                <Button Content="导出全部 CSV" Command="{Binding ExportCommand}" Style="{StaticResource SecondaryButton}" VerticalAlignment="Bottom" Margin="0,20,0,0"/>
+            </WrapPanel>
+        </Border>
+        <StackPanel Grid.Row="1">
+            <Button Content="有新记录，刷新查看" Command="{Binding RefreshCommand}" Visibility="{Binding HasNewRecords, Converter={StaticResource BooleanToVisibilityConverter}}" HorizontalAlignment="Left" Style="{StaticResource SecondaryButton}" Margin="0,0,0,8"/>
+            <TextBlock Text="{Binding Message}" Foreground="{StaticResource MutedBrush}" TextWrapping="Wrap" FontSize="12" Margin="4,0,4,12"/>
+            <ProgressBar Height="3" IsIndeterminate="True" Visibility="{Binding Busy, Converter={StaticResource BooleanToVisibilityConverter}}" Margin="0,0,0,8"/>
+        </StackPanel>
+        <Grid Grid.Row="2">
+            <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="12"/><ColumnDefinition Width="380"/></Grid.ColumnDefinitions>
+            <Border Style="{StaticResource Card}" Padding="12">
+                <Grid><Grid.RowDefinitions><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+                    <DataGrid ItemsSource="{Binding Rows}" SelectedItem="{Binding Selected}" AutoGenerateColumns="False" IsReadOnly="True" SelectionMode="Single">
+                        <DataGrid.Columns>
+                            <DataGridTextColumn Header="采集时间" Binding="{Binding CapturedDisplay}" Width="155"/>
+                            <DataGridTextColumn Header="设备编号" Binding="{Binding DeviceDisplay}" Width="*" MinWidth="110"/>
+                            <DataGridTextColumn Header="温度" Binding="{Binding Environment.TemperatureDisplay, TargetNullValue=未提供}" Width="85"/>
+                            <DataGridTextColumn Header="湿度" Binding="{Binding Environment.HumidityDisplay, TargetNullValue=未提供}" Width="90"/>
+                            <DataGridTextColumn Header="电池电压" Binding="{Binding Power.BatteryDisplay, TargetNullValue=未提供}" Width="85"/>
+                            <DataGridTextColumn Header="记录状态" Binding="{Binding StatusDisplay}" ElementStyle="{StaticResource StatusText}" Width="85"/>
+                        </DataGrid.Columns>
+                    </DataGrid>
+                    <TextBlock Text="当前条件下暂无采集记录" Visibility="{Binding IsEmpty, Converter={StaticResource BooleanToVisibilityConverter}}" HorizontalAlignment="Center" VerticalAlignment="Center" Foreground="{StaticResource MutedBrush}" IsHitTestVisible="False"/>
+                    <DockPanel Grid.Row="1" Margin="0,12,0,0">
+                        <StackPanel DockPanel.Dock="Right" Orientation="Horizontal"><Button Content="上一页" Command="{Binding PreviousCommand}" Style="{StaticResource SecondaryButton}" Padding="12,7" Margin="0,0,8,0"/><Button Content="下一页" Command="{Binding NextCommand}" Style="{StaticResource SecondaryButton}" Padding="12,7"/></StackPanel>
+                        <TextBlock Text="{Binding PageLabel}" VerticalAlignment="Center" Foreground="{StaticResource MutedBrush}" FontSize="12"/>
+                    </DockPanel>
+                </Grid>
+            </Border>
+            <Border Grid.Column="2" Style="{StaticResource Card}" Padding="16"><ScrollViewer VerticalScrollBarVisibility="Auto"><local:PhotoPane DataContext="{Binding Photo}" PreviewHeight="160"/></ScrollViewer></Border>
+        </Grid>
+    </Grid>
+</UserControl>

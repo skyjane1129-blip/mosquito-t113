@@ -21,11 +21,11 @@ public partial class App : Application
                 new KeyValueMetadataParser(),
                 cloud,
                 outbox);
-            var viewModel = new MainViewModel(settings, workflow, cloud);
+            var viewModel = new MainViewModel(settings, workflow, cloud, outbox);
             var window = new MainWindow(viewModel);
             MainWindow = window;
             window.Show();
-            await viewModel.RefreshDeviceAsync();
+            await viewModel.InitializeAsync();
         }
         catch (Exception exception)
         {

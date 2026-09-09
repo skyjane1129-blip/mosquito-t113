@@ -6,3 +6,4 @@ artifacts/
 *.user
 *.suo
 appsettings.Local.json
+.tools/

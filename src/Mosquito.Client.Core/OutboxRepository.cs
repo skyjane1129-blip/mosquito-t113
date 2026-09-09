@@ -84,7 +84,7 @@ public sealed class OutboxRepository
     {
         const string sql = """
             SELECT artifact_json FROM capture_outbox
-            WHERE state IN ('PendingUpload', 'Failed')
+            WHERE state IN ('PendingUpload', 'Failed', 'Uploading')
               AND attempts < 5
             ORDER BY updated_at_utc
             """;
@@ -101,6 +101,22 @@ public sealed class OutboxRepository
             {
                 captures.Add(artifact);
             }
+        }
+        return captures;
+    }
+
+    public async Task<IReadOnlyList<CaptureArtifact>> GetAllAsync(CancellationToken cancellationToken)
+    {
+        var captures = new List<CaptureArtifact>();
+        await using var connection = new SqliteConnection(_connectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT artifact_json FROM capture_outbox";
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            var artifact = JsonSerializer.Deserialize<CaptureArtifact>(reader.GetString(0), _jsonOptions);
+            if (artifact is not null) captures.Add(artifact);
         }
         return captures;
     }

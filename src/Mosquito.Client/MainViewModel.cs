@@ -1,359 +1,364 @@
 using System.Collections.ObjectModel;
-using System.ComponentModel;
-using System.Runtime.CompilerServices;
+using System.Net;
+using System.Net.Http;
 using System.Windows;
-using Microsoft.Win32;
 using Mosquito.Client.Core;
 
 namespace Mosquito.Client;
 
-public sealed record RouteChoice(string Label, UploadRoute Route)
-{
-    public override string ToString() => Label;
-}
-
-public sealed class MainViewModel : INotifyPropertyChanged
+public sealed class MainViewModel : ObservableModel
 {
     private readonly AppSettings _settings;
     private readonly CaptureWorkflow _workflow;
     private readonly CloudApiClient _cloud;
-    private CancellationTokenSource? _operationCancellation;
-    private bool _isBusy;
-    private bool _isAuthenticated;
-    private string _connectionStatus = "正在检查设备";
-    private string _cloudStatus = "未登录";
-    private string _statusMessage = "请连接 USB0，并确保开发板已开启 ADB。";
-    private int _progressValue;
-    private string _temperature = "--";
-    private string _humidity = "--";
-    private string _battery = "--";
-    private string _chargeState = "--";
-    private string? _sensorWarning;
-    private RouteChoice _selectedRoute;
-    private bool _useAutofocusLock;
-    private int _manualFocus;
-    private string _filterStatus = "全部";
-    private DateTime? _filterFrom;
-    private DateTime? _filterTo;
-    private CloudCaptureRecord? _selectedCapture;
-    private string? _photoSource;
-    private string _detailText = "选择一条记录后查看详情";
+    private readonly IDeviceDetectionService _detector;
+    private bool _remote, _busy, _polling, _detecting, _liveReadingExpanded;
+    private int _tab, _recordTab, _remoteView, _usbRetries;
+    private DateTimeOffset? _nextDeviceCheck;
+    private string _username = "", _password = "", _loginMessage = "未登录";
+    private string _connection = "登录后检测设备", _message = "请先在右上角登录。";
+    private string _liveText = "点击“读取设备信息”获取本次测量值。", _registryMessage = "请登录云端查看数据", _district = "上海市";
+    private string _alertMessage = "上报计划待确认", _alertSummary = "上报检查待确认";
+    private RemoteDevice? _device;
+    private ReportSnapshot _alerts = new([], null, false, null);
+    private CancellationTokenSource? _operation;
 
-    public MainViewModel(AppSettings settings, CaptureWorkflow workflow, CloudApiClient cloud)
+    public MainViewModel(AppSettings settings, CaptureWorkflow workflow, CloudApiClient cloud, OutboxRepository outbox,
+        IDeviceDetectionService? detector = null)
     {
-        _settings = settings;
-        _workflow = workflow;
-        _cloud = cloud;
-        _manualFocus = settings.DefaultFocus;
-        Routes =
-        [
-            new RouteChoice("Windows 网络上传（默认）", UploadRoute.Windows),
-            new RouteChoice("开发板 4G 直传（不回退）", UploadRoute.Board4G)
-        ];
-        _selectedRoute = Routes[0];
-        LoginCommand = new AsyncRelayCommand(LoginAsync, () => !IsBusy);
-        CaptureCommand = new AsyncRelayCommand(CaptureAsync, () => !IsBusy);
-        RefreshDeviceCommand = new AsyncRelayCommand(RefreshDeviceAsync, () => !IsBusy);
-        RefreshGalleryCommand = new AsyncRelayCommand(RefreshGalleryAsync, () => !IsBusy && IsAuthenticated);
-        RetryCommand = new AsyncRelayCommand(RetryAsync, () => !IsBusy && IsAuthenticated);
-        ExportCommand = new AsyncRelayCommand(ExportAsync, () => Captures.Count > 0 && !IsBusy);
-        LoadDetailCommand = new AsyncRelayCommand(LoadDetailAsync, () => SelectedCapture is not null && IsAuthenticated);
-        CancelCommand = new AsyncRelayCommand(() =>
-        {
-            _operationCancellation?.Cancel();
-            return Task.CompletedTask;
-        }, () => IsBusy);
+        _settings = settings; _workflow = workflow; _cloud = cloud; ManualFocus = settings.DefaultFocus;
+        var adb = new AdbClient(settings);
+        _detector = detector ?? new DeviceDetectionService(settings, adb, new WindowsUsbDeviceProbe(), adb.GetVersionAsync);
+        Session = new(cloud);
+        DirectHistory = new(cloud, outbox, false, Session); RemoteHistory = new(cloud, outbox, true, Session);
+        DirectPhoto = new(cloud, Session); RemotePhoto = new(cloud, Session);
+        Reports = new(cloud, async id => { if (!Session.CanUseCloud) return; RecordTab = 0; await RemoteHistory.OpenRecordAsync(id); }, Session);
+        DirectModeCommand = new(() => SwitchMode(false), () => IsLoggedIn && !Busy);
+        RemoteModeCommand = new(() => SwitchMode(true), () => IsLoggedIn && !Busy);
+        LoginCommand = new(LoginAsync, () => IsLoggedOut && !Busy && !string.IsNullOrWhiteSpace(Username) && Password.Length > 0);
+        LogoutCommand = new(() => { LockSession(false); return Task.CompletedTask; }, () => IsLoggedIn && !Busy);
+        DetectDeviceCommand = new(RefreshDeviceAsync, () => IsLoggedIn && !Busy && IsDirect);
+        CaptureCommand = new(CaptureAsync, () => IsLoggedIn && !Busy && IsDirect);
+        ReadDeviceCommand = new(ReadDeviceAsync, () => IsLoggedIn && !Busy && IsDirect);
+        RetryCommand = new(RetryAsync, () => Session.CanUseCloud && !Busy && IsDirect);
+        RefreshRemoteCommand = new(RefreshRemoteAsync, () => Session.CanUseCloud && !Busy && IsRemote);
+        OpenAlertCommand = new(async () => { Tab = 1; RecordTab = 1; await Reports.OpenAlertAsync(SelectedDevice?.DeviceId, SelectedAlert?.ExpectedAtUtc); }, () => Session.CanUseCloud && !Busy && HasAlert);
+        OpenOverviewAlertsCommand = new(async () => { Tab = 1; RecordTab = 1; await Reports.OpenAlertAsync(null, null); }, () => Session.CanUseCloud && !Busy);
+        CancelCommand = new(() => { _operation?.Cancel(); return Task.CompletedTask; }, () => Busy);
+        Session.Changed += SessionChanged;
+        _cloud.AuthenticationExpired += CloudAuthenticationExpired;
     }
-
-    public event PropertyChangedEventHandler? PropertyChanged;
-    public string Username { get; set; } = "demo";
-    public string Password { private get; set; } = string.Empty;
-    public IReadOnlyList<RouteChoice> Routes { get; }
-    public IReadOnlyList<string> StatusFilters { get; } = ["全部", "Complete", "Partial", "Failed"];
-    public ObservableCollection<CloudCaptureRecord> Captures { get; } = [];
-    public AsyncRelayCommand LoginCommand { get; }
-    public AsyncRelayCommand CaptureCommand { get; }
-    public AsyncRelayCommand RefreshDeviceCommand { get; }
-    public AsyncRelayCommand RefreshGalleryCommand { get; }
-    public AsyncRelayCommand RetryCommand { get; }
-    public AsyncRelayCommand ExportCommand { get; }
-    public AsyncRelayCommand LoadDetailCommand { get; }
-    public AsyncRelayCommand CancelCommand { get; }
-
+    public ClientSession Session { get; }
+    public bool IsLoggedIn => Session.CanUseLocal;
+    public bool IsLoggedOut => !IsLoggedIn;
+    public bool IsLoginEditable => IsLoggedOut && !Busy;
+    public string IdentityLabel => Session.Kind == SessionKind.Engineer ? "工程师模式" : "云端已登录 · " + Session.Account;
+    public string LoginMessage { get => _loginMessage; private set => Set(ref _loginMessage, value); }
+    public string CloudStatus => IsLoggedIn ? IdentityLabel : LoginMessage;
+    public string Username { get => _username; set { if (Set(ref _username, value)) LoginCommand.RaiseCanExecuteChanged(); } }
+    public string Password { private get => _password; set { if (Set(ref _password, value)) { Raise(nameof(HasPassword)); LoginCommand.RaiseCanExecuteChanged(); } } }
+    public bool HasPassword => Password.Length > 0;
+    public event Action? ClearPasswordRequested;
+    public HistoryViewModel DirectHistory { get; }
+    public HistoryViewModel RemoteHistory { get; }
+    public HistoryViewModel ActiveHistory => IsRemote ? RemoteHistory : DirectHistory;
+    public ReportsViewModel Reports { get; }
+    public PhotoViewModel DirectPhoto { get; }
+    public PhotoViewModel RemotePhoto { get; }
+    public PhotoViewModel WorkPhoto => IsRemote ? RemotePhoto : DirectPhoto;
+    public ObservableCollection<RemoteDevice> Devices { get; } = [];
+    public ObservableCollection<DetectionCheck> DetectionChecks { get; } = [];
+    public string DetectionTime { get; private set; } = "尚未检测";
+    public bool HasDetectionDetails => DetectionChecks.Count > 0;
+    public string DetectionButtonText => _detecting ? "检测中…" : "检测设备";
+    public bool RegistryReady { get; private set; }
+    public IReadOnlyList<RemoteDevice> VisibleDevices => Devices.Where(x => District == "上海市" || x.LastLocation?.District == District).ToArray();
+    public int ManualFocus { get; set; }
+    public bool UseAutofocusLock { get; set; }
+    public string DeviceId => _settings.DeviceId ?? "待配置稳定设备编号";
     public string DeviceSerial => _settings.DeviceSerial;
     public string ApiBaseUrl => _settings.ApiBaseUrl;
-
-    public bool IsBusy
+    public bool IsRemote { get => _remote; private set { Set(ref _remote, value); Raise(nameof(IsDirect)); Raise(nameof(IsRemoteMap)); Raise(nameof(ActiveHistory)); Raise(nameof(WorkPhoto)); Raise(nameof(ModeDescription)); Commands(); } }
+    public bool IsDirect => !IsRemote;
+    public bool IsRemoteMap => IsRemote && RemoteView == 0;
+    public bool Busy { get => _busy; private set { Set(ref _busy, value); Raise(nameof(IsLoginEditable)); Commands(); } }
+    public string ModeDescription => IsRemote ? "每小时自动上报 · 地图与云端记录" : "Type-C / ADB · 本机采集与数据传输";
+    public int Tab { get => _tab; set { if (IsLoggedIn || value == 0) Set(ref _tab, value); } }
+    public int RecordTab { get => IsRemote ? _recordTab : 0; set { if (IsRemote && IsLoggedIn) Set(ref _recordTab, value); } }
+    public int RemoteView { get => _remoteView; set { if ((IsLoggedIn || value == 0) && Set(ref _remoteView, value)) Raise(nameof(IsRemoteMap)); } }
+    public string ConnectionStatus { get => _connection; private set => Set(ref _connection, value); }
+    public string StatusMessage { get => _message; private set => Set(ref _message, value); }
+    public string LiveText { get => _liveText; private set => Set(ref _liveText, value); }
+    public bool IsLiveReadingExpanded { get => _liveReadingExpanded; set => Set(ref _liveReadingExpanded, value); }
+    public string RegistryMessage { get => _registryMessage; private set => Set(ref _registryMessage, value); }
+    public string District { get => _district; set { Set(ref _district, value); Raise(nameof(VisibleDevices)); } }
+    public string AlertMessage { get => _alertMessage; private set => Set(ref _alertMessage, value); }
+    public string AlertSummary { get => _alertSummary; private set => Set(ref _alertSummary, value); }
+    private ReportCheck? SelectedAlert => _alerts.Items.FirstOrDefault(x => x.DeviceId == SelectedDevice?.DeviceId && x.EffectiveState == ReportState.Overdue);
+    public bool HasAlert => SelectedAlert is not null;
+    public RemoteDevice? SelectedDevice
     {
-        get => _isBusy;
-        private set
-        {
-            if (Set(ref _isBusy, value))
-            {
-                RaiseCommandStates();
-            }
-        }
-    }
-
-    public bool IsAuthenticated
-    {
-        get => _isAuthenticated;
-        private set
-        {
-            if (Set(ref _isAuthenticated, value))
-            {
-                RaiseCommandStates();
-            }
-        }
-    }
-
-    public string ConnectionStatus { get => _connectionStatus; private set => Set(ref _connectionStatus, value); }
-    public string CloudStatus { get => _cloudStatus; private set => Set(ref _cloudStatus, value); }
-    public string StatusMessage { get => _statusMessage; private set => Set(ref _statusMessage, value); }
-    public int ProgressValue { get => _progressValue; private set => Set(ref _progressValue, value); }
-    public string Temperature { get => _temperature; private set => Set(ref _temperature, value); }
-    public string Humidity { get => _humidity; private set => Set(ref _humidity, value); }
-    public string Battery { get => _battery; private set => Set(ref _battery, value); }
-    public string ChargeState { get => _chargeState; private set => Set(ref _chargeState, value); }
-    public string? SensorWarning { get => _sensorWarning; private set => Set(ref _sensorWarning, value); }
-    public string? PhotoSource { get => _photoSource; private set => Set(ref _photoSource, value); }
-    public string DetailText { get => _detailText; private set => Set(ref _detailText, value); }
-
-    public RouteChoice SelectedRoute
-    {
-        get => _selectedRoute;
+        get => _device;
         set
         {
-            if (Set(ref _selectedRoute, value))
-            {
-                StatusMessage = value.Route == UploadRoute.Windows
-                    ? "照片将通过 Windows 网络上传。"
-                    : "照片将由开发板通过 4G 直传；失败时不会自动切换通道。";
-            }
+            if (value is not null && !Session.CanUseCloud || !Set(ref _device, value)) return;
+            UpdateAlert(); RemotePhoto.Clear(); Raise(nameof(DeviceLocation)); Commands();
+            if (value?.LatestCaptureId is Guid id) _ = LoadLatestAsync(value, id);
         }
     }
+    public string DeviceLocation => SelectedDevice?.LastLocation is { } location
+        ? $"上次 GNSS：{location.Display}\n采样时间：{BeijingTime.Format(location.SampledAtUtc)}\n坐标系：{location.CoordinateSystem ?? "待确认"}"
+        : "尚无有效 GNSS 位置，不在地图上虚构坐标。";
+    public AsyncRelayCommand DirectModeCommand { get; }
+    public AsyncRelayCommand RemoteModeCommand { get; }
+    public AsyncRelayCommand LoginCommand { get; }
+    public AsyncRelayCommand LogoutCommand { get; }
+    public AsyncRelayCommand DetectDeviceCommand { get; }
+    public AsyncRelayCommand CaptureCommand { get; }
+    public AsyncRelayCommand ReadDeviceCommand { get; }
+    public AsyncRelayCommand RetryCommand { get; }
+    public AsyncRelayCommand RefreshRemoteCommand { get; }
+    public AsyncRelayCommand OpenAlertCommand { get; }
+    public AsyncRelayCommand OpenOverviewAlertsCommand { get; }
+    public AsyncRelayCommand CancelCommand { get; }
 
-    public bool UseAutofocusLock { get => _useAutofocusLock; set => Set(ref _useAutofocusLock, value); }
-    public int ManualFocus { get => _manualFocus; set => Set(ref _manualFocus, value); }
-    public string FilterStatus { get => _filterStatus; set => Set(ref _filterStatus, value); }
-    public DateTime? FilterFrom { get => _filterFrom; set => Set(ref _filterFrom, value); }
-    public DateTime? FilterTo { get => _filterTo; set => Set(ref _filterTo, value); }
-
-    public CloudCaptureRecord? SelectedCapture
+    public Task InitializeAsync() => Task.CompletedTask;
+    private bool Current(int generation) => IsLoggedIn && generation == Session.Generation;
+    private void SessionChanged()
     {
-        get => _selectedCapture;
-        set
-        {
-            if (Set(ref _selectedCapture, value))
-            {
-                LoadDetailCommand.RaiseCanExecuteChanged();
-            }
-        }
+        Raise(nameof(IsLoggedIn)); Raise(nameof(IsLoggedOut)); Raise(nameof(IsLoginEditable)); Raise(nameof(IdentityLabel)); Raise(nameof(CloudStatus)); Commands();
     }
-
-    public async Task RefreshDeviceAsync()
+    private async Task SwitchMode(bool remote)
     {
-        if (IsBusy)
+        if (!IsLoggedIn || Busy || IsRemote == remote) return;
+        IsRemote = remote; Raise(nameof(RecordTab)); StatusMessage = ModeDescription;
+        if (remote)
         {
-            return;
+            if (Session.CanUseCloud && Devices.Count == 0) await RefreshRemoteAsync();
+            else if (!Session.CanUseCloud) RegistryMessage = "当前为工程师本地登录。请退出后使用云端账号登录，以查看真实云端数据。";
         }
-        try
-        {
-            var online = await _workflow.IsDeviceOnlineAsync(CancellationToken.None);
-            ConnectionStatus = online ? "设备在线" : "设备未连接";
-            if (!online)
-            {
-                Temperature = Humidity = Battery = ChargeState = "--";
-                return;
-            }
-            var status = await _workflow.ReadLiveStatusAsync(CancellationToken.None);
-            Temperature = status.Environment?.TemperatureDisplay ?? "--";
-            Humidity = status.Environment?.HumidityDisplay ?? "--";
-            Battery = status.Power?.BatteryDisplay ?? "--";
-            ChargeState = status.Power?.ChargeDisplay ?? "--";
-            SensorWarning = status.Error;
-        }
-        catch (Exception exception)
-        {
-            ConnectionStatus = "设备检查失败";
-            SensorWarning = exception.Message;
-        }
+        else await RefreshDeviceAsync();
     }
-
     private async Task LoginAsync()
     {
-        await RunBusyAsync(async cancellationToken =>
-        {
-            var expires = await _cloud.LoginAsync(Username.Trim(), Password, cancellationToken);
-            IsAuthenticated = true;
-            CloudStatus = $"已登录 · 有效至 {expires.ToLocalTime():HH:mm}";
-            StatusMessage = "云端登录成功，可以开始采集。";
-            await RefreshGalleryCoreAsync(cancellationToken);
-        }, "登录失败");
-    }
-
-    private async Task CaptureAsync()
-    {
-        if (SelectedRoute.Route == UploadRoute.Windows && !IsAuthenticated)
-        {
-            StatusMessage = "请先登录云端，再使用 Windows 上传通道。";
-            return;
-        }
-        await RunBusyAsync(async cancellationToken =>
-        {
-            ProgressValue = 0;
-            var progress = new Progress<WorkflowProgress>(item =>
-            {
-                ProgressValue = item.Percent;
-                StatusMessage = item.Message;
-            });
-            var artifact = await _workflow.CaptureAndUploadAsync(
-                SelectedRoute.Route,
-                UseAutofocusLock ? null : ManualFocus,
-                progress,
-                cancellationToken);
-            PhotoSource = new Uri(artifact.LocalPhotoPath).AbsoluteUri;
-            Temperature = artifact.Metadata.Environment.TemperatureDisplay;
-            Humidity = artifact.Metadata.Environment.HumidityDisplay;
-            Battery = artifact.Metadata.Power.BatteryDisplay;
-            ChargeState = artifact.Metadata.Power.ChargeDisplay;
-            SensorWarning = artifact.Metadata.RecordStatus == "PARTIAL"
-                ? "照片已保留，但一个或多个传感器样本不完整。"
-                : null;
-            StatusMessage = artifact.State switch
-            {
-                CaptureState.Complete => "采集完成，照片和环境数据已上传。",
-                CaptureState.Partial => "照片已上传，记录标记为部分完成。",
-                CaptureState.Failed => $"照片已安全保存，等待重试上传：{artifact.LastError}",
-                _ => "采集完成。"
-            };
-            if (IsAuthenticated)
-            {
-                await RefreshGalleryCoreAsync(cancellationToken);
-            }
-        }, "采集失败");
-    }
-
-    private Task RefreshGalleryAsync() =>
-        RunBusyAsync(RefreshGalleryCoreAsync, "刷新记录失败");
-
-    private async Task RefreshGalleryCoreAsync(CancellationToken cancellationToken)
-    {
-        DateTimeOffset? from = FilterFrom is null
-            ? null
-            : new DateTimeOffset(FilterFrom.Value.Date, TimeZoneInfo.Local.GetUtcOffset(FilterFrom.Value));
-        DateTimeOffset? to = FilterTo is null
-            ? null
-            : new DateTimeOffset(FilterTo.Value.Date.AddDays(1).AddTicks(-1), TimeZoneInfo.Local.GetUtcOffset(FilterTo.Value));
-        var records = await _cloud.ListCapturesAsync(
-            _settings.DeviceSerial,
-            FilterStatus == "全部" ? null : FilterStatus,
-            from,
-            to,
-            cancellationToken);
-        Captures.Clear();
-        foreach (var record in records)
-        {
-            Captures.Add(record);
-        }
-        ExportCommand.RaiseCanExecuteChanged();
-    }
-
-    private async Task LoadDetailAsync()
-    {
-        if (SelectedCapture is null)
-        {
-            return;
-        }
-        await RunBusyAsync(async cancellationToken =>
-        {
-            var detail = await _cloud.GetCaptureAsync(SelectedCapture.Id, cancellationToken);
-            PhotoSource = detail.PhotoDownloadUrl;
-            DetailText = $"编号：{detail.Capture.Id:D}\n" +
-                         $"时间：{detail.Capture.CapturedAtUtc.ToLocalTime():yyyy-MM-dd HH:mm:ss}\n" +
-                         $"状态：{detail.Capture.Status}\n" +
-                         $"温度：{detail.Capture.Environment?.TemperatureDisplay ?? "--"}\n" +
-                         $"湿度：{detail.Capture.Environment?.HumidityDisplay ?? "--"}\n" +
-                         $"电池：{detail.Capture.Power?.BatteryDisplay ?? "--"}\n" +
-                         $"充电：{detail.Capture.Power?.ChargeDisplay ?? "--"}";
-        }, "读取详情失败");
-    }
-
-    private async Task RetryAsync()
-    {
-        await RunBusyAsync(async cancellationToken =>
-        {
-            var progress = new Progress<WorkflowProgress>(item => StatusMessage = item.Message);
-            var succeeded = await _workflow.RetryPendingUploadsAsync(progress, cancellationToken);
-            StatusMessage = $"重试完成，本次成功 {succeeded} 条。";
-            await RefreshGalleryCoreAsync(cancellationToken);
-        }, "重试上传失败");
-    }
-
-    private async Task ExportAsync()
-    {
-        var dialog = new SaveFileDialog
-        {
-            Title = "导出采集记录",
-            Filter = "CSV 文件 (*.csv)|*.csv",
-            FileName = $"蚊虫采集记录-{DateTime.Now:yyyyMMdd-HHmm}.csv",
-            AddExtension = true
-        };
-        if (dialog.ShowDialog() != true)
-        {
-            return;
-        }
-        await RunBusyAsync(async cancellationToken =>
-        {
-            await CsvExporter.ExportAsync(dialog.FileName, Captures, cancellationToken);
-            StatusMessage = $"已导出 {Captures.Count} 条记录。";
-        }, "导出失败");
-    }
-
-    private async Task RunBusyAsync(Func<CancellationToken, Task> action, string failurePrefix)
-    {
-        IsBusy = true;
-        _operationCancellation = new CancellationTokenSource();
+        if (Busy || IsLoggedIn || string.IsNullOrWhiteSpace(Username) || Password.Length == 0) return;
+        Busy = true; LoginMessage = "正在登录…";
+        using var cts = new CancellationTokenSource(); _operation = cts;
         try
         {
-            await action(_operationCancellation.Token);
+            var account = Username.Trim();
+            if (account == "admin")
+            {
+                if (Password != "000") { LoginMessage = "账号或密码错误"; return; }
+                _cloud.Logout(); Session.Set(SessionKind.Engineer, account);
+            }
+            else
+            {
+                await _cloud.LoginAsync(account, Password, cts.Token);
+                Session.Set(SessionKind.Cloud, account);
+            }
+            Password = ""; ClearPasswordRequested?.Invoke();
+            IsRemote = false; Tab = 0; Raise(nameof(RecordTab));
+            StatusMessage = "登录成功 · " + IdentityLabel;
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) { LoginMessage = cts.IsCancellationRequested ? "登录已取消" : "云端连接超时，请重试"; }
+        catch (HttpRequestException ex) { LoginMessage = ex.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden ? "账号或密码错误" : "云端暂不可用，请检查服务连接"; }
+        catch (Exception) { LoginMessage = "登录未完成，请检查云端服务配置"; }
+        finally { _operation = null; Busy = false; Raise(nameof(CloudStatus)); }
+        if (IsLoggedIn)
         {
-            StatusMessage = "操作已取消；板端已生成的照片不会被删除。";
+            var generation = Session.Generation;
+            await DirectHistory.QueryAsync(); if (Current(generation)) await RefreshDeviceAsync();
         }
-        catch (Exception exception)
+    }
+    private void LockSession(bool expired)
+    {
+        _cloud.Logout(); Session.Set(SessionKind.None);
+        Username = ""; Password = ""; ClearPasswordRequested?.Invoke();
+        _nextDeviceCheck = null; _usbRetries = 0;
+        Devices.Clear(); SelectedDevice = null; RegistryReady = false; District = "上海市";
+        _alerts = new([], null, false, null); UpdateAlert();
+        DetectionChecks.Clear(); DetectionTime = "尚未检测"; Raise(nameof(DetectionTime)); Raise(nameof(HasDetectionDetails));
+        ConnectionStatus = "登录后检测设备"; LiveText = "点击“读取设备信息”获取本次测量值。"; IsLiveReadingExpanded = false;
+        RegistryMessage = "请登录云端查看数据"; AlertSummary = "上报检查待确认";
+        IsRemote = false; Tab = 0; _recordTab = 0; RemoteView = 0; Raise(nameof(RecordTab));
+        LoginMessage = expired ? "云端登录已过期，请重新登录" : "未登录";
+        StatusMessage = "工作区已锁定，请先登录。本机已保存记录继续保留。";
+        Raise(nameof(VisibleDevices)); Raise(nameof(CloudStatus));
+    }
+    private void CloudAuthenticationExpired()
+    {
+        void Expire() { if (Session.Kind == SessionKind.Cloud && !_cloud.IsAuthenticated) LockSession(true); }
+        if (Application.Current is { } app && !app.Dispatcher.CheckAccess()) app.Dispatcher.BeginInvoke(Expire);
+        else Expire();
+    }
+    public void CheckSession()
+    {
+        if (Session.Kind == SessionKind.Cloud && !_cloud.IsAuthenticated) LockSession(true);
+    }
+    public void DeviceChanged()
+    {
+        if (!IsLoggedIn || IsRemote) return;
+        _usbRetries = 4; _nextDeviceCheck = DateTimeOffset.UtcNow.AddMilliseconds(800);
+    }
+    public async Task TickAsync()
+    {
+        CheckSession();
+        if (IsLoggedIn && IsDirect && !Busy && _nextDeviceCheck <= DateTimeOffset.UtcNow)
         {
-            StatusMessage = $"{failurePrefix}：{exception.Message}";
+            _nextDeviceCheck = null; await RefreshDeviceAsync();
+        }
+    }
+    private Task CaptureAsync() => RunAsync(async (token, generation) =>
+    {
+        var artifact = await _workflow.CaptureAndUploadAsync(UploadRoute.Windows, UseAutofocusLock ? null : ManualFocus,
+            new Progress<WorkflowProgress>(x => { if (Current(generation)) StatusMessage = x.Message; }), token, upload: false);
+        if (!Current(generation)) return;
+        await DirectPhoto.LoadAsync(LocalHistory.FromArtifact(artifact));
+        if (!Current(generation)) return;
+        DirectHistory.NotifyNew(); StatusMessage = "采集已保存到本机。可在记录查询查看，或登录云端后上传待传记录。";
+    }, finishLocalSave: true);
+    private Task ReadDeviceAsync() => RunAsync(async (token, generation) =>
+    {
+        var result = await _workflow.ReadLiveStatusAsync(token);
+        if (Current(generation))
+        {
+            var environment = result.Environment;
+            var power = result.Power;
+            LiveText = $"测量于 {BeijingTime.Format(DateTimeOffset.UtcNow)}\n" +
+                $"温度：{environment?.TemperatureDisplay ?? "未提供"}   湿度：{environment?.HumidityDisplay ?? "未提供"}\n" +
+                $"环境结果：{environment?.Result ?? "未提供"}   错误码：{environment?.ErrorCode ?? "未提供"}   CRC：{environment?.CrcOk switch { true => "通过", false => "失败", _ => "未提供" }}\n" +
+                $"电池电压：{power?.BatteryDisplay ?? "未提供"}   {power?.ChargeDisplay ?? ""}\n" +
+                $"电源结果：{power?.Result ?? "未提供"}   错误码：{power?.ErrorCode ?? "未提供"}   FAULT_REG：{power?.FaultRegister ?? "未提供"}\n" +
+                (result.Error is null ? "状态：读取正常" : "状态：" + result.Error);
+            IsLiveReadingExpanded = true;
+            StatusMessage = result.Error is null
+                ? "设备信息读取结束，请查看右侧实时读取结果；该结果独立于照片的采集数据。"
+                : "设备信息已读取，但板端报告警告或失败；请查看实时读取结果。";
+        }
+    });
+    private Task RetryAsync() => RunAsync(async (token, generation) =>
+    {
+        if (!Session.CanUseCloud) return;
+        var count = await _workflow.RetryPendingUploadsAsync(new Progress<WorkflowProgress>(x => { if (Current(generation)) StatusMessage = x.Message; }), token);
+        if (Current(generation)) { StatusMessage = $"上传结束，成功 {count} 条；未成功的照片仍保留本机。"; DirectHistory.NotifyNew(); }
+    });
+    public async Task RefreshDeviceAsync()
+    {
+        if (!IsLoggedIn || IsRemote || Busy) return;
+        var detectionGeneration = Session.Generation; var completed = false;
+        _detecting = true; Raise(nameof(DetectionButtonText));
+        try
+        {
+            await RunAsync(async (token, generation) =>
+            {
+                ConnectionStatus = "正在检测通信组件、USB 与板端接口…";
+                var result = await _detector.DetectAsync(token);
+                if (!Current(generation)) return;
+                DetectionChecks.Clear(); foreach (var check in result.Checks) DetectionChecks.Add(check);
+                DetectionTime = "检查于 " + BeijingTime.Format(result.CheckedAt); Raise(nameof(DetectionTime)); Raise(nameof(HasDetectionDetails));
+                ConnectionStatus = result.Summary;
+                completed = true;
+                if (!result.Connected && _usbRetries > 0) { _usbRetries--; _nextDeviceCheck = DateTimeOffset.UtcNow.AddSeconds(3); }
+            });
         }
         finally
         {
-            _operationCancellation.Dispose();
-            _operationCancellation = null;
-            IsBusy = false;
+            if (Current(detectionGeneration) && !completed) ConnectionStatus = "检测未完成，请重试";
+            _detecting = false; Raise(nameof(DetectionButtonText));
         }
     }
-
-    private void RaiseCommandStates()
+    private async Task LoadLatestAsync(RemoteDevice device, Guid id)
     {
-        LoginCommand.RaiseCanExecuteChanged();
-        CaptureCommand.RaiseCanExecuteChanged();
-        RefreshDeviceCommand.RaiseCanExecuteChanged();
-        RefreshGalleryCommand.RaiseCanExecuteChanged();
-        RetryCommand.RaiseCanExecuteChanged();
-        ExportCommand.RaiseCanExecuteChanged();
-        LoadDetailCommand.RaiseCanExecuteChanged();
-        CancelCommand.RaiseCanExecuteChanged();
-    }
-
-    private bool Set<T>(ref T field, T value, [CallerMemberName] string? propertyName = null)
-    {
-        if (EqualityComparer<T>.Default.Equals(field, value))
+        if (!Session.CanUseCloud) return;
+        var generation = Session.Generation; var token = Session.Token;
+        try
         {
-            return false;
+            var record = (await _cloud.GetCaptureAsync(id, token)).Capture;
+            if (Current(generation) && ReferenceEquals(device, SelectedDevice)) await RemotePhoto.LoadAsync(record);
         }
-        field = value;
-        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
-        return true;
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { if (Current(generation) && ReferenceEquals(device, SelectedDevice)) StatusMessage = $"读取最新采集失败：{ex.Message}"; }
+        finally { CheckSession(); }
+    }
+    private Task RefreshRemoteAsync() => RunAsync(async (token, generation) =>
+    {
+        if (!Session.CanUseCloud) return;
+        var registry = await _cloud.GetDevicesAsync(token);
+        if (!Current(generation)) return;
+        if (registry.Supported)
+        {
+            RegistryReady = true;
+            var selectedId = SelectedDevice?.DeviceId;
+            Devices.Clear(); foreach (var device in registry.Items) Devices.Add(device);
+            SelectedDevice = Devices.FirstOrDefault(x => x.DeviceId == selectedId);
+            RegistryMessage = $"已登记 {Devices.Count} 台 · 地图按上次有效 GNSS 展示 · {BeijingTime.Format(DateTimeOffset.UtcNow)}";
+            Raise(nameof(VisibleDevices));
+        }
+        else RegistryMessage = "设备目录待接入：区域数量待确认。现有云端照片仍可在“记录查询”查看。";
+        await RefreshAlertsAsync(token);
+    });
+    private async Task RefreshAlertsAsync(CancellationToken token)
+    {
+        if (!Session.CanUseCloud) return;
+        var generation = Session.Generation;
+        try
+        {
+            var now = DateTimeOffset.UtcNow;
+            var snapshot = await _cloud.QueryReportChecksAsync(new(null, null, now.AddHours(-24), now), token);
+            if (!Current(generation)) return;
+            if (!snapshot.Supported) { AlertSummary = "检查暂停 · 上报计划待确认"; AlertMessage = snapshot.Warning ?? "上报计划待确认"; return; }
+            _alerts = snapshot;
+            var count = snapshot.Items.Where(x => x.EffectiveState == ReportState.Overdue).Select(x => x.DeviceId).Distinct().Count();
+            AlertSummary = $"近 24 小时 · {count} 台设备有超时时段 · 检查于 {BeijingTime.Format(snapshot.CheckedAtUtc)}"; UpdateAlert();
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { if (Current(generation)) { AlertSummary = $"检查暂停 · 保留截至 {BeijingTime.Format(_alerts.CheckedAtUtc)} 的结果"; AlertMessage = $"上报检查暂不可用：{ex.Message}"; } }
+        finally { CheckSession(); }
+    }
+    private void UpdateAlert()
+    {
+        var known = _alerts.Items.Any(x => x.DeviceId == SelectedDevice?.DeviceId && x.EffectiveState != ReportState.Pending);
+        AlertMessage = SelectedAlert is { } alert ? $"{alert.ExpectedAtUtc.ToOffset(BeijingTime.Offset):MM-dd HH:mm} 时段超时未上报 · 点击查看" : known ? "当前检查范围未发现该设备的超时时段" : "上报计划待确认";
+        Raise(nameof(HasAlert));
+    }
+    public async Task PollAsync()
+    {
+        CheckSession(); if (!IsLoggedIn || _polling) return;
+        _polling = true; var generation = Session.Generation; var token = Session.Token;
+        try
+        {
+            if (IsRemote && Session.CanUseCloud)
+            {
+                await RemoteHistory.PollAsync();
+                if (Current(generation) && !Busy) await RefreshAlertsAsync(token);
+                if (Current(generation) && Tab == 1 && RecordTab == 1) await Reports.PollAsync();
+            }
+            else if (IsDirect) { await RefreshDeviceAsync(); if (Current(generation)) await DirectHistory.PollAsync(); }
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { if (Current(generation)) StatusMessage = $"检查暂停：{ex.Message}"; }
+        finally { _polling = false; CheckSession(); Commands(); }
+    }
+    private async Task RunAsync(Func<CancellationToken, int, Task> action, bool finishLocalSave = false)
+    {
+        CheckSession(); if (Busy || !IsLoggedIn) return;
+        var generation = Session.Generation; Busy = true;
+        using var cts = finishLocalSave ? new CancellationTokenSource() : CancellationTokenSource.CreateLinkedTokenSource(Session.Token);
+        _operation = cts;
+        try { await action(cts.Token, generation); }
+        catch (OperationCanceledException) { if (Current(generation)) StatusMessage = "操作已取消。已经保存的照片不会删除。"; }
+        catch (Exception ex) { if (Current(generation)) StatusMessage = $"操作未完成：{ex.Message}"; }
+        finally { _operation = null; Busy = false; CheckSession(); }
+    }
+    public void Close()
+    {
+        _cloud.AuthenticationExpired -= CloudAuthenticationExpired; _operation?.Cancel(); LockSession(false);
+    }
+    private void Commands()
+    {
+        foreach (var command in new[] { LoginCommand, LogoutCommand, DetectDeviceCommand, CaptureCommand, ReadDeviceCommand, RetryCommand,
+            RefreshRemoteCommand, CancelCommand, DirectModeCommand, RemoteModeCommand, OpenAlertCommand, OpenOverviewAlertsCommand })
+            command?.RaiseCanExecuteChanged();
     }
 }

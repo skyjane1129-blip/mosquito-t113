@@ -1,0 +1,23 @@
+<UserControl x:Class="Mosquito.Client.CaptureSummaryView" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+ <UserControl.Resources>
+  <Style x:Key="MetricBox" TargetType="Border"><Setter Property="Background" Value="#F3F7F9"/><Setter Property="CornerRadius" Value="6"/><Setter Property="Padding" Value="10,8"/><Setter Property="Margin" Value="0,0,6,6"/></Style>
+  <Style x:Key="MetricLabel" TargetType="TextBlock"><Setter Property="Foreground" Value="{StaticResource MutedBrush}"/><Setter Property="FontSize" Value="11"/><Setter Property="Margin" Value="0,0,0,4"/></Style>
+  <Style x:Key="MetricValue" TargetType="TextBlock"><Setter Property="Foreground" Value="{StaticResource PrimaryBrush}"/><Setter Property="FontSize" Value="17"/><Setter Property="FontWeight" Value="SemiBold"/></Style>
+ </UserControl.Resources>
+ <StackPanel>
+  <DockPanel Margin="0,0,0,10">
+   <TextBlock DockPanel.Dock="Right" Text="{Binding Record.StatusDisplay, TargetNullValue=尚无记录, FallbackValue=尚无记录}" Style="{StaticResource StatusText}" FontSize="12" VerticalAlignment="Center"/>
+   <TextBlock Text="{Binding Record.CapturedDisplay, TargetNullValue=尚未选择采集记录, FallbackValue=尚未选择采集记录}" Foreground="{StaticResource MutedBrush}" FontSize="12" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
+  </DockPanel>
+  <UniformGrid Columns="2" Margin="0,0,-6,0">
+   <Border Style="{StaticResource MetricBox}"><StackPanel><TextBlock Text="温度" Style="{StaticResource MetricLabel}"/><TextBlock Text="{Binding Record.Environment.TemperatureDisplay, TargetNullValue=未提供, FallbackValue=未提供}" Style="{StaticResource MetricValue}"/></StackPanel></Border>
+   <Border Style="{StaticResource MetricBox}"><StackPanel><TextBlock Text="湿度" Style="{StaticResource MetricLabel}"/><TextBlock Text="{Binding Record.Environment.HumidityDisplay, TargetNullValue=未提供, FallbackValue=未提供}" Style="{StaticResource MetricValue}"/></StackPanel></Border>
+   <Border Style="{StaticResource MetricBox}"><StackPanel><TextBlock Text="电池电压" Style="{StaticResource MetricLabel}"/><TextBlock Text="{Binding Record.Power.BatteryDisplay, TargetNullValue=未提供, FallbackValue=未提供}" Style="{StaticResource MetricValue}"/></StackPanel></Border>
+   <Border Style="{StaticResource MetricBox}"><StackPanel><TextBlock Text="充电状态" Style="{StaticResource MetricLabel}"/><TextBlock Text="{Binding Record.Power.ChargeDisplay, TargetNullValue=未提供, FallbackValue=未提供}" Style="{StaticResource MetricValue}" FontSize="15"/></StackPanel></Border>
+  </UniformGrid>
+  <TextBlock Text="{Binding TransferSummary}" Foreground="{StaticResource MutedBrush}" FontSize="12" TextWrapping="Wrap" LineHeight="19" Margin="0,4,0,8"/>
+  <Expander x:Name="MoreDetails" Header="更多采集详情" FontSize="12" Margin="0,4,0,0">
+   <TextBlock Text="{Binding Text}" TextWrapping="Wrap" LineHeight="23" Foreground="#354A60" FontSize="12" Margin="0,10,0,0"/>
+  </Expander>
+ </StackPanel>
+</UserControl>

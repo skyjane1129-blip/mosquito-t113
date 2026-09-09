@@ -35,12 +35,21 @@ public sealed partial class CaptureWorkflow(
                 cancellationToken);
             var environmentValues = MachineValues.Parse(environmentResult.StandardOutput);
             var powerValues = MachineValues.Parse(powerResult.StandardOutput);
+            var environment = MachineValues.ToEnvironment(environmentValues);
+            var power = MachineValues.ToPower(powerValues);
+            var warnings = new List<string>();
+            if (environmentResult.ExitCode != 0 || !environment.Result.Equals("PASS", StringComparison.OrdinalIgnoreCase))
+            {
+                warnings.Add($"环境 RESULT={environment.Result}，ERROR_CODE={environment.ErrorCode}，远端退出码={environmentResult.ExitCode}");
+            }
+            if (powerResult.ExitCode != 0 || !power.Result.Equals("PASS", StringComparison.OrdinalIgnoreCase))
+            {
+                warnings.Add($"电源 RESULT={power.Result}，ERROR_CODE={power.ErrorCode}，FAULT_REG={power.FaultRegister ?? "未提供"}，远端退出码={powerResult.ExitCode}");
+            }
             return new LiveBoardStatus(
-                MachineValues.ToEnvironment(environmentValues),
-                MachineValues.ToPower(powerValues),
-                environmentResult.ExitCode == 0 && powerResult.ExitCode == 0
-                    ? null
-                    : "一个或多个实时传感器返回警告或失败");
+                environment,
+                power,
+                warnings.Count == 0 ? null : string.Join("；", warnings));
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
@@ -52,7 +61,8 @@ public sealed partial class CaptureWorkflow(
         UploadRoute route,
         int? manualFocus,
         IProgress<WorkflowProgress>? progress,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool upload = true)
     {
         if (!await IsDeviceOnlineAsync(cancellationToken))
         {
@@ -81,8 +91,23 @@ public sealed partial class CaptureWorkflow(
                 $"Board capture failed with exit {capture.ExitCode}: {capture.StandardError}\n{capture.StandardOutput}");
         }
         var markers = MachineValues.Parse(capture.StandardOutput);
-        var remotePhoto = RequiredMarker(markers, "PHOTO");
-        var remoteMetadata = RequiredMarker(markers, "METADATA");
+        var remotePhoto = route == UploadRoute.Windows
+            ? RequiredUniqueMarker(capture.StandardOutput, "PHOTO")
+            : RequiredMarker(markers, "PHOTO");
+        var remoteMetadata = route == UploadRoute.Windows
+            ? RequiredUniqueMarker(capture.StandardOutput, "METADATA")
+            : RequiredMarker(markers, "METADATA");
+        var captureResult = route == UploadRoute.Windows
+            ? RequiredUniqueMarker(capture.StandardOutput, "CAPTURE_RESULT")
+            : markers.GetValueOrDefault("CAPTURE_RESULT");
+        if (route == UploadRoute.Windows)
+        {
+            var captureId = RequiredUniqueMarker(capture.StandardOutput, "CAPTURE_ID");
+            if (!Guid.TryParse(captureId, out var reportedId) || reportedId != id)
+            {
+                throw new InvalidDataException("Board CAPTURE_ID does not match the requested capture UUID.");
+            }
+        }
         var localDirectory = Path.Combine(settings.LocalDataRoot, "captures", id.ToString("D"));
         var localPhoto = Path.Combine(localDirectory, "photo.jpg");
         var localMetadata = Path.Combine(localDirectory, "metadata.txt");
@@ -96,6 +121,28 @@ public sealed partial class CaptureWorkflow(
 
         progress?.Report(new WorkflowProgress("verify", "正在校验照片和传感器数据", 60));
         var parsed = metadataParser.Parse(await File.ReadAllTextAsync(localMetadata, cancellationToken), id);
+        if (route == UploadRoute.Windows &&
+            !remotePhoto.Equals(parsed.PhotoPath, StringComparison.Ordinal))
+        {
+            throw new InvalidDataException("Board PHOTO output does not match metadata photo path.");
+        }
+        if (route == UploadRoute.Windows &&
+            !string.Equals(captureResult, parsed.RecordStatus, StringComparison.Ordinal))
+        {
+            throw new InvalidDataException("Board CAPTURE_RESULT does not match metadata record_status.");
+        }
+        if (route == UploadRoute.Windows &&
+            (capture.ExitCode == 0) != parsed.RecordStatus.Equals("COMPLETE", StringComparison.Ordinal))
+        {
+            throw new InvalidDataException("Board exit code does not match COMPLETE/PARTIAL capture status.");
+        }
+        if (route == UploadRoute.Windows)
+            ValidateDirectFocusMetadata(parsed, manualFocus);
+        if (route == UploadRoute.Windows && parsed.RecordStatus == "COMPLETE" &&
+            (!IsPassOrWarning(parsed.Environment.Result) || !IsPassOrWarning(parsed.Power.Result)))
+        {
+            throw new InvalidDataException("Metadata record_status is COMPLETE although a sensor result is FAIL.");
+        }
         var photoSha = await Sha256Async(localPhoto, cancellationToken);
         var metadataSha = await Sha256Async(localMetadata, cancellationToken);
         var photoBytes = new FileInfo(localPhoto).Length;
@@ -108,6 +155,10 @@ public sealed partial class CaptureWorkflow(
         if (dimensions.Width != parsed.JpegWidth || dimensions.Height != parsed.JpegHeight)
         {
             throw new InvalidDataException("JPEG dimensions do not match board metadata.");
+        }
+        if (route == UploadRoute.Windows && dimensions is not { Width: 3264, Height: 2448 })
+        {
+            throw new InvalidDataException("Direct capture JPEG must be 3264x2448.");
         }
 
         var boardCloudStatus = markers.GetValueOrDefault("CLOUD_CAPTURE_STATUS");
@@ -129,8 +180,15 @@ public sealed partial class CaptureWorkflow(
             metadataBytes,
             parsed,
             initialState,
-            initialState == CaptureState.Failed ? "4G upload failed without Windows fallback." : null);
+            initialState == CaptureState.Failed ? "4G upload failed without Windows fallback." : null)
+        { DeviceId = settings.DeviceId };
         await outbox.SaveAsync(artifact, cancellationToken);
+
+        if (route == UploadRoute.Windows && !upload)
+        {
+            progress?.Report(new WorkflowProgress("local", "照片和数据已保存到本机，可稍后单独上传", 100));
+            return artifact;
+        }
 
         if (route == UploadRoute.Board4G)
         {
@@ -198,6 +256,72 @@ public sealed partial class CaptureWorkflow(
         values.TryGetValue(name, out var value) && !string.IsNullOrWhiteSpace(value)
             ? value
             : throw new InvalidDataException($"Board output did not contain {name}=... .");
+
+    private static string RequiredUniqueMarker(string output, string name)
+    {
+        var prefix = name + "=";
+        var values = output.Replace("\r", string.Empty, StringComparison.Ordinal)
+            .Split('\n', StringSplitOptions.TrimEntries)
+            .Where(line => line.StartsWith(prefix, StringComparison.Ordinal))
+            .Select(line => line[prefix.Length..])
+            .ToArray();
+        return values.Length switch
+        {
+            1 when !string.IsNullOrWhiteSpace(values[0]) => values[0],
+            0 => throw new InvalidDataException($"Board output did not contain {name}=... ."),
+            _ => throw new InvalidDataException($"Board output contained duplicate {name}=... markers.")
+        };
+    }
+
+    private static bool IsPassOrWarning(string result) =>
+        result.Equals("PASS", StringComparison.OrdinalIgnoreCase) ||
+        result.Equals("WARN", StringComparison.OrdinalIgnoreCase);
+
+    private static void ValidateDirectFocusMetadata(ParsedMetadata metadata, int? manualFocus)
+    {
+        var root = metadata.Sections[string.Empty];
+        var minimum = RequiredControlInt(root, "focus_min");
+        var maximum = RequiredControlInt(root, "focus_max");
+        var step = RequiredControlInt(root, "focus_step");
+        var selected = RequiredControlInt(root, "focus_selected");
+        var beforeCapture = RequiredControlInt(root, "focus_readback_before_capture");
+        var afterCapture = RequiredControlInt(root, "focus_readback_after_capture");
+        if (minimum < 1 || maximum > 1023 || minimum > maximum || step <= 0 ||
+            selected < minimum || selected > maximum || (selected - minimum) % step != 0)
+        {
+            throw new InvalidDataException("Metadata focus range, step or selected value is invalid.");
+        }
+        if (metadata.FocusSelected != selected || beforeCapture != selected || afterCapture != selected)
+        {
+            throw new InvalidDataException("Metadata focus selected/readback values are inconsistent.");
+        }
+        if (!string.Equals(root.GetValueOrDefault("focus_lock_verified"), "yes", StringComparison.OrdinalIgnoreCase) ||
+            RequiredControlInt(root, "focus_auto_before_capture") != 0 ||
+            RequiredControlInt(root, "focus_auto_after_capture") != 0)
+        {
+            throw new InvalidDataException("Metadata does not prove that focus was locked with autofocus disabled.");
+        }
+        if (manualFocus is int requested)
+        {
+            if (metadata.CaptureMode != "manual-focus" ||
+                RequiredControlInt(root, "focus_requested") != requested ||
+                selected != requested)
+            {
+                throw new InvalidDataException("Manual focus metadata does not match the requested focus.");
+            }
+        }
+        else if (metadata.CaptureMode != "autofocus-lock")
+        {
+            throw new InvalidDataException("Autofocus capture metadata mode is invalid.");
+        }
+    }
+
+    private static int RequiredControlInt(IReadOnlyDictionary<string, string> values, string key) =>
+        values.TryGetValue(key, out var raw) &&
+        int.TryParse(raw, System.Globalization.NumberStyles.Integer,
+            System.Globalization.CultureInfo.InvariantCulture, out var value)
+            ? value
+            : throw new InvalidDataException($"Required focus control '{key}' is missing or invalid.");
 
     private static CaptureState ToFinalState(string recordStatus) =>
         recordStatus == "COMPLETE" ? CaptureState.Complete : CaptureState.Partial;

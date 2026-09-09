@@ -13,5 +13,6 @@
   <ItemGroup>
     <ProjectReference Include="../Mosquito.Client.Core/Mosquito.Client.Core.csproj" />
     <None Include="appsettings.json" CopyToOutputDirectory="PreserveNewest" />
+    <Resource Include="Assets/shanghai-districts.json" />
   </ItemGroup>
 </Project>

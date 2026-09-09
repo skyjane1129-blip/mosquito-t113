@@ -5,7 +5,7 @@ using System.Text.Json.Serialization;
 
 namespace Mosquito.Client.Core;
 
-public sealed class CloudApiClient
+public sealed partial class CloudApiClient
 {
     private readonly HttpClient _httpClient;
     private readonly JsonSerializerOptions _jsonOptions = new(JsonSerializerDefaults.Web)
@@ -14,6 +14,10 @@ public sealed class CloudApiClient
         Converters = { new JsonStringEnumConverter() }
     };
     private string? _accessToken;
+    private DateTimeOffset? _expiresAt;
+    private int _authenticationGeneration;
+    private CancellationTokenSource _authenticationLifetime = new();
+    public event Action? AuthenticationExpired;
 
     public CloudApiClient(AppSettings settings, HttpMessageHandler? handler = null)
     {
@@ -22,22 +26,37 @@ public sealed class CloudApiClient
         _httpClient.Timeout = TimeSpan.FromMinutes(3);
     }
 
-    public bool IsAuthenticated => _accessToken is not null;
+    public bool IsAuthenticated => _accessToken is not null && _expiresAt > DateTimeOffset.UtcNow;
+
+    public void Logout()
+    {
+        _accessToken = null; _expiresAt = null; _authenticationGeneration++;
+        var previous = _authenticationLifetime; _authenticationLifetime = new();
+        previous.Cancel(); previous.Dispose();
+    }
 
     public async Task<DateTimeOffset> LoginAsync(
         string username,
         string password,
         CancellationToken cancellationToken)
     {
+        var generation = _authenticationGeneration;
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(TimeSpan.FromSeconds(15));
         using var response = await _httpClient.PostAsJsonAsync(
             "api/auth/login",
             new { username, password },
             _jsonOptions,
-            cancellationToken);
-        await EnsureSuccessAsync(response, cancellationToken);
-        var login = await response.Content.ReadFromJsonAsync<LoginResponse>(_jsonOptions, cancellationToken)
+            timeout.Token);
+        await EnsureSuccessAsync(response, timeout.Token);
+        var login = await response.Content.ReadFromJsonAsync<LoginResponse>(_jsonOptions, timeout.Token)
             ?? throw new InvalidDataException("Cloud login returned an empty response.");
+        cancellationToken.ThrowIfCancellationRequested();
+        if (generation != _authenticationGeneration) throw new OperationCanceledException("Login was superseded.");
+        if (string.IsNullOrWhiteSpace(login.AccessToken) || login.ExpiresAt <= DateTimeOffset.UtcNow)
+            throw new InvalidDataException("云端返回的登录凭据无效或已过期。");
         _accessToken = login.AccessToken;
+        _expiresAt = login.ExpiresAt;
         return login.ExpiresAt;
     }
 
@@ -58,7 +77,7 @@ public sealed class CloudApiClient
             artifact.PhotoSha256,
             artifact.MetadataSha256,
             artifact.Metadata.Environment,
-            artifact.Metadata.Power);
+            artifact.Metadata.Power) { DeviceId = artifact.DeviceId };
         using var createResponse = await SendAuthorizedJsonAsync(
             HttpMethod.Post,
             "api/captures",
@@ -182,11 +201,23 @@ public sealed class CloudApiClient
         HttpRequestMessage request,
         CancellationToken cancellationToken)
     {
+        EnsureAuthenticated();
+        var generation = _authenticationGeneration;
+        using var lifetime = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _authenticationLifetime.Token);
+        using var ownedRequest = request;
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _accessToken);
-        var response = await _httpClient.SendAsync(request, cancellationToken);
-        request.Dispose();
-        await EnsureSuccessAsync(response, cancellationToken);
-        return response;
+        var response = await _httpClient.SendAsync(request, lifetime.Token);
+        try
+        {
+            lifetime.Token.ThrowIfCancellationRequested();
+            if (response.StatusCode == System.Net.HttpStatusCode.Unauthorized && generation == _authenticationGeneration)
+            {
+                Logout(); AuthenticationExpired?.Invoke();
+            }
+            await EnsureSuccessAsync(response, cancellationToken);
+            return response;
+        }
+        catch { response.Dispose(); throw; }
     }
 
     private static async Task EnsureSuccessAsync(
@@ -206,7 +237,7 @@ public sealed class CloudApiClient
 
     private void EnsureAuthenticated()
     {
-        if (_accessToken is null)
+        if (!IsAuthenticated)
         {
             throw new InvalidOperationException("Log in before calling the cloud API.");
         }
@@ -225,5 +256,8 @@ public sealed class CloudApiClient
         string PhotoSha256,
         string MetadataSha256,
         EnvironmentReading Environment,
-        PowerReading Power);
+        PowerReading Power)
+    {
+        public string? DeviceId { get; init; }
+    }
 }

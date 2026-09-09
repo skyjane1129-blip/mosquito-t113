@@ -1,6 +1,9 @@
 using System.Text;
+using Microsoft.Data.Sqlite;
 using Mosquito.Client.Core;
 
+try
+{
 var id = Guid.Parse("a73d7c04-a788-4426-93bf-412e4829fc5e");
 var metadataText = $$"""
     metadata_version=3
@@ -101,9 +104,12 @@ try
     var csv = await File.ReadAllTextAsync(csvPath);
     Assert(csv.Contains("30.16", StringComparison.Ordinal), "CSV temperature");
     Assert(csv.Contains("4.124", StringComparison.Ordinal), "CSV battery voltage");
+    await HistoryTests.RunAsync(Assert, temporaryRoot, outbox, artifact);
 }
 finally
 {
+    // Disposed connections remain pooled; release Windows file handles before cleanup.
+    SqliteConnection.ClearAllPools();
     Directory.Delete(temporaryRoot, true);
 }
 
@@ -111,6 +117,12 @@ Console.WriteLine("PASS: metadata v3 parsing and UUID integrity");
 Console.WriteLine("PASS: real sensor units without fake battery percentage");
 Console.WriteLine("PASS: SQLite retry outbox state transitions");
 Console.WriteLine("PASS: UTF-8 CSV export");
+}
+catch (Exception exception)
+{
+    Console.Error.WriteLine(exception);
+    Environment.ExitCode = 1;
+}
 
 static void Assert(bool condition, string message)
 {

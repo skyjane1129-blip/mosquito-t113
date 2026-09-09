@@ -6,7 +6,9 @@ public sealed class AppSettings
 {
     public string AdbPath { get; set; } = @"C:\embedded\android-platform-tools\adb.exe";
     public string DeviceSerial { get; set; } = "MOSQUITO-T113-DEV";
-    public string BoardCommandPath { get; set; } = "/data/local/tmp/client-demo:/usr/bin:/bin";
+    // Provisioned stable identity; never silently treat an ADB connection serial as a registry ID.
+    public string? DeviceId { get; set; }
+    public string BoardCommandPath { get; set; } = "/usr/bin:/bin";
     public string ApiBaseUrl { get; set; } = "http://127.0.0.1:5080";
     public string LocalDataRoot { get; set; } = string.Empty;
     public int CommandTimeoutSeconds { get; set; } = 180;

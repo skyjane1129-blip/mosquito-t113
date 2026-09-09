@@ -84,7 +84,10 @@ public sealed record CaptureArtifact(
     long MetadataBytes,
     ParsedMetadata Metadata,
     CaptureState State,
-    string? LastError);
+    string? LastError)
+{
+    public string? DeviceId { get; init; }
+}
 
 public sealed record AdbDevice(string Serial, string State, string Details);
 public sealed record CommandResult(int ExitCode, string StandardOutput, string StandardError, TimeSpan Duration);
@@ -113,7 +116,36 @@ public sealed record CloudCaptureRecord(
     long? MetadataBytes,
     EnvironmentReading? Environment,
     PowerReading? Power,
-    string? FailureCode);
+    string? FailureCode)
+{
+    public string? DeviceId { get; init; }
+    public DateTimeOffset? ReceivedAtUtc { get; init; }
+    public string? TriggerSource { get; init; }
+    public string? TimeSource { get; init; }
+    public string? FailureStage { get; init; }
+    public GeoSample? Location { get; init; }
+    public string? TransferStatus { get; init; }
+    [JsonIgnore]
+    public string? LocalPhotoPath { get; init; }
+    public string DeviceDisplay => string.IsNullOrWhiteSpace(DeviceId) ? $"编号待确认 · {DeviceSerial}" : DeviceId;
+    public string StatusDisplay => Status.ToUpperInvariant() switch
+    {
+        "COMPLETE" => "完整", "PARTIAL" => "部分完成", "FAILED" => "失败", _ => "待确认"
+    };
+    public string CapturedDisplay => BeijingTime.Format(CapturedAtUtc);
+    public string ReceivedDisplay => BeijingTime.Format(ReceivedAtUtc);
+    public string TimeSourceDisplay => TimeSource?.ToUpperInvariant() switch
+    {
+        "WINDOWS" => "Windows 采集时间", "BOARD" when BoardTimeValid => "板端时间（已校时）",
+        "SERVER" => "服务端时间", _ => "时间来源待确认"
+    };
+}
+
+public sealed record GeoSample(double Latitude, double Longitude, DateTimeOffset? SampledAtUtc, string? District, string? CoordinateSystem)
+{
+    public bool IsValid => double.IsFinite(Latitude) && double.IsFinite(Longitude) && Latitude is >= -90 and <= 90 && Longitude is >= -180 and <= 180;
+    public string Display => IsValid ? $"{Latitude:F6}, {Longitude:F6} · {District ?? "区域待确认"}" : "无有效定位";
+}
 
 public sealed record CloudCaptureDetail(
     CloudCaptureRecord Capture,
