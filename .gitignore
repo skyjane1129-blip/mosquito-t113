@@ -1,0 +1,17 @@
+bin/
+obj/
+.vs/
+.idea/
+artifacts/
+local-storage/
+*.user
+*.suo
+appsettings.Local.json
+
+# Windows local runtime
+artifacts/
+data/
+
+# embedded Python runtime for ai/analyze.py (rebuild: ai/README.md)
+ai/python311/
+ai/pip-install.log

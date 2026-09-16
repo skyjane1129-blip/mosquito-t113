@@ -1,0 +1,22 @@
+[Unit]
+Description=Mosquito capture cloud API
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+User=mosquito-api
+Group=mosquito-api
+WorkingDirectory=/opt/mosquito-cloud
+ExecStart=/usr/bin/dotnet /opt/mosquito-cloud/Mosquito.Cloud.Api.dll
+EnvironmentFile=/etc/mosquito-cloud.env
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/mosquito-cloud
+
+[Install]
+WantedBy=multi-user.target
