@@ -40,6 +40,8 @@ MOSQUITO_PHOTO_METADATA=3
 
 Windows 最新 WPF 客户端直接针对该精确成品通过真实 Login、Detect、Read、Capture 按钮完成回归，进程退出码 0。采集 ID 为 `74dd2db1-5f7d-485e-96bb-8a2428d17cec`；客户端确认 `/usr/bin` 命令、实时电源 WARN、手动焦距 500、两次 ADB pull、严格文件校验、SQLite `PendingUpload`、历史及当前/历史预览。证据见 `build/test-runs/20260909-111101+0800-v5.6.4-windows-real/`。
 
+2026-09-10 又在该精确成品上完成了一次临时 Air780EG 单基站 LBS 实测：SIM、LTE 注册、分组附着、官方 LBS 端点和一次 `AT+CIPGSMLOC=1,1` 均通过，临时承载关闭成功，远端退出码为 0。工具只部署在板端 `/tmp`，没有进入镜像、没有运行 GNSS 或 PPP；坐标和原始响应只保存在 0600 私有文件中。完整的非敏感证据见 `build/test-runs/20260910-lbs-O1kvSt/README.md`。这不是固定精度承诺，也不代表 LBS 已集成到本版本。
+
 随后审计发现客户端普通启动配置仍优先搜索历史临时目录。Windows Agent 已把生产配置和代码默认值统一改为 `/usr/bin:/bin`；Release 构建、Core、模拟 WPF 和使用生产配置原文件的只读实板检测均以退出码 0 通过，后者确认当前 v5.6.4 已连接且采集接口就绪。73 个证据文件的哈希校验通过，见 `build/test-runs/20260909-115342+0800-windows-command-path/`。旧的客户端生成/发布目录可能仍含历史配置，分发时必须重新生成。
 
 ## 目的与范围

@@ -1,0 +1,41 @@
+#!/bin/sh
+
+CAPTURE_ID=
+FOCUS=500
+TMP_LOG="/tmp/mosquito-capture-4g-$$.log"
+
+cleanup()
+{
+	rm -f "$TMP_LOG" 2>/dev/null
+}
+trap cleanup 0
+
+usage()
+{
+	echo 'Usage: mosquito-capture-4g --id UUID [--focus 500|auto]' >&2
+}
+
+while [ "$#" -gt 0 ]; do
+	case "$1" in
+	--id) [ "$#" -ge 2 ] || { usage; exit 2; }; CAPTURE_ID="$2"; shift 2 ;;
+	--focus) [ "$#" -ge 2 ] || { usage; exit 2; }; FOCUS="$2"; shift 2 ;;
+	*) usage; exit 2 ;;
+	esac
+done
+
+# Fail before powering the camera when cloud configuration is unavailable.
+mosquito-upload-4g --check-config || exit 2
+mosquito-capture --id "$CAPTURE_ID" --focus "$FOCUS" > "$TMP_LOG" 2>&1
+CAPTURE_EXIT=$?
+cat "$TMP_LOG"
+if [ "$CAPTURE_EXIT" -ne 0 ] && [ "$CAPTURE_EXIT" -ne 10 ]; then
+	exit "$CAPTURE_EXIT"
+fi
+PHOTO="$(sed -n 's/^PHOTO=//p' "$TMP_LOG" | sed -n '1p')"
+METADATA="$(sed -n 's/^METADATA=//p' "$TMP_LOG" | sed -n '1p')"
+if mosquito-upload-4g --id "$CAPTURE_ID" --photo "$PHOTO" --metadata "$METADATA"; then
+	exit 0
+fi
+echo 'CLOUD_CAPTURE_STATUS=FAILED'
+echo '[WARN] photo and metadata remain on the TF card; 4G upload did not fall back to Windows'
+exit 20

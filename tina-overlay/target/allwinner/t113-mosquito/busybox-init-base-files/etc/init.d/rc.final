@@ -103,3 +103,26 @@
 	log "[PASS] automatic ADB startup completed end_uptime=$(cat /proc/uptime 2>/dev/null)"
 	finish 0
 ) >/dev/null 2>&1 &
+
+# Remote-mode hook: run the cloud agent only when /etc/mosquito-cloud.conf opts in with
+# MOSQUITO_REMOTE_AGENT=1.  It waits for UDISK, the modem UART and the tools, then gives the
+# automatic ADB start a head start so USB0 and the 4G link do not compete during boot.
+# Creating /overlay/mosquito-test/disable-remote-agent from UART disables it for rescue work.
+(
+	CONF=/etc/mosquito-cloud.conf
+	DISABLE_MARKER=/overlay/mosquito-test/disable-remote-agent
+	LOG=/tmp/mosquito-remote-agent-boot.log
+	[ -r "$CONF" ] || exit 0
+	grep -qx 'MOSQUITO_REMOTE_AGENT=1' "$CONF" || exit 0
+	[ -e "$DISABLE_MARKER" ] && exit 0
+	waited=0
+	until grep -q ' /overlay .* rw[, ]' /proc/mounts 2>/dev/null && grep -q ' /mnt/UDISK ' /proc/mounts 2>/dev/null && \
+		[ -x /usr/bin/mosquito-remote-agent ] && [ -c /dev/ttyS1 ]; do
+		[ "$waited" -ge 120 ] && { echo "[FAIL] remote agent dependencies not ready" > "$LOG"; exit 1; }
+		sleep 1
+		waited=$((waited + 1))
+	done
+	sleep 20
+	echo "[INFO] starting mosquito-remote-agent at uptime $(cat /proc/uptime 2>/dev/null)" > "$LOG"
+	exec /usr/bin/mosquito-remote-agent run >> "$LOG" 2>&1
+) >/dev/null 2>&1 &

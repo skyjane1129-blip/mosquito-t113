@@ -1,0 +1,57 @@
+# Copy to /etc/mosquito-cloud.conf and set mode 0600 on an approved DEMO ONLY image.
+# Never commit the real device key.
+MOSQUITO_API_BASE_URL=https://capture-api.example.cn
+MOSQUITO_DEVICE_API_KEY=REPLACE_WITH_AT_LEAST_32_RANDOM_CHARACTERS
+# Demo transport only: set to 1 to allow an http:// API URL (photos travel unencrypted).
+MOSQUITO_ALLOW_HTTP=0
+# Stable registry id shown in the client; must match the id the operator selects.
+MOSQUITO_DEVICE_ID=MOSQUITO-T113-DEV
+MOSQUITO_APN=3gnet
+# Start mosquito-remote-agent from rc.final at boot (1) or leave manual (0).
+MOSQUITO_REMOTE_AGENT=0
+# Long-poll wait per command request, heartbeat and location-refresh intervals in seconds.
+MOSQUITO_POLL_WAIT_SEC=25
+MOSQUITO_HEARTBEAT_SEC=120
+MOSQUITO_LOCATION_SEC=900
+# Positioning mode (all share the modem UART and briefly drop PPP):
+#   lbs      = Air780EG single-cell LBS; also reports serving+neighbour cells for server-side
+#              multi-cell/fusion locators. Fast (a few seconds), coarse (hundreds of m to ~1.5 km).
+#   gnss     = built-in GNSS with AGNSS (AT+CGNSAID) assistance; needs a working GNSS antenna and
+#              open sky. Blocks PPP for up to MOSQUITO_GNSS_TIMEOUT_SEC while it searches.
+#   gnss-lbs = try GNSS first, fall back to LBS when there is no fix within the timeout.
+#   none     = do not position.
+# Every fix carries the observed LTE cells so the server can run 高德/百度 multi-cell locators and fuse.
+MOSQUITO_LOCATION_MODE=lbs
+MOSQUITO_GNSS_TIMEOUT_SEC=180
+# 1 = push time + EPO ephemeris + coarse position to the GNSS engine before searching (recommended).
+MOSQUITO_AGNSS=1
+MOSQUITO_LOCATION_AFTER_CAPTURE=1
+# Never query LBS again within this many seconds of the last fix. The free Luat service documents
+# "1 lookup per 2 minutes", but measured 2026-09-14 only lookups >= ~10 min apart succeed (CODE=7
+# otherwise), so 600 avoids wasting the post-capture refresh.
+MOSQUITO_LOCATION_MIN_SEC=600
+# Fast site learning (operator "Learn" command from the client): rounds of "modem re-search
+# (AT+CFUN=1,1) + LBS fix". A fresh cell search camps on the strongest = nearest cell, so the server's
+# learned cell table covers this site after the first successful round; 3 rounds (~35 min, spaced by
+# MOSQUITO_LEARN_QUERY_GAP_SEC) also give the trailing median enough samples. RESEARCH_SEC is the wait
+# for the modem to re-register after the re-search; a CODE=7 lookup is retried RETRIES times per round.
+MOSQUITO_LEARN_ROUNDS=3
+MOSQUITO_LEARN_RESEARCH_SEC=40
+MOSQUITO_LEARN_QUERY_GAP_SEC=600
+MOSQUITO_LEARN_RETRIES=1
+MOSQUITO_DEFAULT_FOCUS=500
+# Power profile:
+#   always-on = keep PPP up and hold a long-poll; a remote command is picked up within about a second.
+#               Highest power. This is the demo default.
+#   duty      = after an idle poll finds no command, drop PPP, put the modem in UART light-sleep and
+#               idle for MOSQUITO_IDLE_SLEEP_SEC before reconnecting. A remote command then arrives
+#               within MOSQUITO_IDLE_SLEEP_SEC plus the reconnect time (~10-15 s). Lower radio power.
+#               The device shows OFFLINE between wakes (no heartbeat for longer than the server's
+#               180 s online window); this is expected for a field power profile.
+#   NOTE: the largest savings (T113 CPUFreq/CPUIdle, suspend-to-RAM with RTC wake, modem PSM) require
+#   the v5.6.5 kernel and are validated separately; duty only cycles the modem link on this image.
+MOSQUITO_POWER_PROFILE=always-on
+# 240 s bounds worst-case remote-command pickup to about 4-5 min, matching the accepted field latency.
+MOSQUITO_IDLE_SLEEP_SEC=240
+# 1 = issue AT+CSCLK=2 so the modem light-sleeps while PPP is down in duty mode.
+MOSQUITO_MODEM_SLEEP=1

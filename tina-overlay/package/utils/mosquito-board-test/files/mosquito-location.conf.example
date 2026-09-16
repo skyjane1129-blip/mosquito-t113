@@ -1,0 +1,4 @@
+# Copy to /etc/mosquito/location.conf and chmod 0600.
+MOSQUITO_LOCATION_DEVICE_ID=MOSQUITO001
+MOSQUITO_TRACCAR_URL=https://tracker.example.cn:5055
+MOSQUITO_APN=3gnet

@@ -1,0 +1,272 @@
+#!/bin/sh
+
+CONFIG_FILE="${MOSQUITO_CLOUD_CONFIG:-/etc/mosquito-cloud.conf}"
+CAPTURE_ID=
+PHOTO=
+METADATA=
+DEVICE_ID=
+COMMAND_ID=
+TRIGGER=
+LOCATION_JSON=
+CHECK_ONLY=0
+TMP_PREFIX="/tmp/mosquito-upload-4g-$$"
+
+cleanup()
+{
+	rm -f "$TMP_PREFIX".* 2>/dev/null
+}
+trap cleanup 0
+trap 'exit 129' 1
+trap 'exit 130' 2
+trap 'exit 143' 15
+
+usage()
+{
+	echo 'Usage: mosquito-upload-4g --id UUID --photo PATH --metadata PATH' >&2
+	echo '           [--device-id ID] [--command-id UUID] [--trigger MANUAL|SCHEDULED|REMOTE_COMMAND]' >&2
+	echo '           [--location-json FILE]' >&2
+	echo '       mosquito-upload-4g --check-config' >&2
+}
+
+while [ "$#" -gt 0 ]; do
+	case "$1" in
+	--id) [ "$#" -ge 2 ] || { usage; exit 2; }; CAPTURE_ID="$2"; shift 2 ;;
+	--photo) [ "$#" -ge 2 ] || { usage; exit 2; }; PHOTO="$2"; shift 2 ;;
+	--metadata) [ "$#" -ge 2 ] || { usage; exit 2; }; METADATA="$2"; shift 2 ;;
+	--device-id) [ "$#" -ge 2 ] || { usage; exit 2; }; DEVICE_ID="$2"; shift 2 ;;
+	--command-id) [ "$#" -ge 2 ] || { usage; exit 2; }; COMMAND_ID="$2"; shift 2 ;;
+	--trigger) [ "$#" -ge 2 ] || { usage; exit 2; }; TRIGGER="$2"; shift 2 ;;
+	--location-json) [ "$#" -ge 2 ] || { usage; exit 2; }; LOCATION_JSON="$2"; shift 2 ;;
+	--check-config) CHECK_ONLY=1; shift ;;
+	*) usage; exit 2 ;;
+	esac
+done
+
+[ -r "$CONFIG_FILE" ] || {
+	echo "[FAIL] 4G cloud config is not readable: $CONFIG_FILE" >&2
+	exit 2
+}
+# BusyBox on this image has no stat applet; read the mode string from ls -ld instead.
+CONFIG_MODE="$(ls -ld "$CONFIG_FILE" 2>/dev/null | cut -c1-10)"
+case "$CONFIG_MODE" in
+	????------) ;;
+	'') echo '[FAIL] cannot verify cloud config permissions' >&2; exit 2 ;;
+	*) echo "[FAIL] cloud config must be mode 0600 or stricter, got $CONFIG_MODE" >&2; exit 2 ;;
+esac
+
+# The file is root-owned configuration on the demo image. It must contain assignments only.
+. "$CONFIG_FILE"
+: "${MOSQUITO_API_BASE_URL:?MOSQUITO_API_BASE_URL is required}"
+: "${MOSQUITO_DEVICE_API_KEY:?MOSQUITO_DEVICE_API_KEY is required}"
+MOSQUITO_ALLOW_HTTP="${MOSQUITO_ALLOW_HTTP:-0}"
+MOSQUITO_API_BASE_URL="${MOSQUITO_API_BASE_URL%/}"
+case "$MOSQUITO_API_BASE_URL" in
+	https://*) ;;
+	http://*) [ "$MOSQUITO_ALLOW_HTTP" = 1 ] || { echo '[FAIL] HTTP cloud API is forbidden' >&2; exit 2; } ;;
+	*) echo '[FAIL] cloud API URL must start with https://' >&2; exit 2 ;;
+esac
+[ "${#MOSQUITO_DEVICE_API_KEY}" -ge 32 ] || {
+	echo '[FAIL] device API key must be at least 32 characters' >&2
+	exit 2
+}
+DEVICE_ID="${DEVICE_ID:-${MOSQUITO_DEVICE_ID:-MOSQUITO-T113-DEV}}"
+case "$DEVICE_ID" in
+	''|*[!A-Za-z0-9._:-]*) echo '[FAIL] device id may contain only letters, digits, dot, underscore, colon and hyphen' >&2; exit 2 ;;
+esac
+[ "${#DEVICE_ID}" -le 64 ] || { echo '[FAIL] device id is longer than 64 characters' >&2; exit 2; }
+command -v curl >/dev/null 2>&1 || { echo '[FAIL] curl is unavailable' >&2; exit 2; }
+command -v jsonfilter >/dev/null 2>&1 || { echo '[FAIL] jsonfilter is unavailable' >&2; exit 2; }
+command -v sha256sum >/dev/null 2>&1 || { echo '[FAIL] sha256sum is unavailable' >&2; exit 2; }
+[ "$CHECK_ONLY" -eq 0 ] || {
+	echo 'CONFIG_RESULT=PASS'
+	echo "API_BASE_URL=$MOSQUITO_API_BASE_URL"
+	echo "DEVICE_ID=$DEVICE_ID"
+	exit 0
+}
+
+is_uuid()
+{
+	printf '%s\n' "$1" | grep -Eq \
+		'^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[1-5][0-9A-Fa-f]{3}-[89ABab][0-9A-Fa-f]{3}-[0-9A-Fa-f]{12}$'
+}
+
+is_uuid "$CAPTURE_ID" || {
+	echo '[FAIL] capture id must be a canonical UUID' >&2
+	exit 2
+}
+if [ -n "$COMMAND_ID" ] && ! is_uuid "$COMMAND_ID"; then
+	echo '[FAIL] command id must be a canonical UUID' >&2
+	exit 2
+fi
+if [ -z "$TRIGGER" ]; then
+	[ -n "$COMMAND_ID" ] && TRIGGER=REMOTE_COMMAND || TRIGGER=SCHEDULED
+fi
+case "$TRIGGER" in MANUAL|SCHEDULED|REMOTE_COMMAND) ;; *) echo '[FAIL] invalid trigger source' >&2; exit 2 ;; esac
+case "$PHOTO" in /mnt/UDISK/mosquito-test/camera/*.jpg) ;; *) echo '[FAIL] invalid photo path' >&2; exit 2 ;; esac
+[ -s "$PHOTO" ] || { echo '[FAIL] photo is missing or empty' >&2; exit 2; }
+[ "$METADATA" = "$PHOTO.txt" ] || { echo '[FAIL] metadata path must be PHOTO.txt' >&2; exit 2; }
+[ -s "$METADATA" ] || { echo '[FAIL] metadata is missing or empty' >&2; exit 2; }
+
+metadata_value()
+{
+	META_SECTION="$1"
+	META_KEY="$2"
+	awk -v wanted_section="$META_SECTION" -v wanted_key="$META_KEY" '
+		BEGIN { section = "" }
+		/^\[/ { section = substr($0, 2, length($0) - 2); next }
+		section == wanted_section && index($0, wanted_key "=") == 1 {
+			print substr($0, length(wanted_key) + 2)
+			exit
+		}
+	' "$METADATA"
+}
+
+json_number()
+{
+	case "$1" in ''|*[!0-9.-]*) printf 'null' ;; *) printf '%s' "$1" ;; esac
+}
+
+# Optional location JSON in API shape: {"latitude":..,"longitude":..,"coordinateSystem":"WGS84","source":"LBS"}.
+# Only validated numeric/enumerated fields are forwarded; the file itself is never sent verbatim.
+LOCATION_FRAGMENT=
+if [ -n "$LOCATION_JSON" ]; then
+	if [ -r "$LOCATION_JSON" ]; then
+		LOC_LAT="$(jsonfilter -i "$LOCATION_JSON" -e '@.latitude' 2>/dev/null)"
+		LOC_LON="$(jsonfilter -i "$LOCATION_JSON" -e '@.longitude' 2>/dev/null)"
+		LOC_CRS="$(jsonfilter -i "$LOCATION_JSON" -e '@.coordinateSystem' 2>/dev/null)"
+		LOC_SRC="$(jsonfilter -i "$LOCATION_JSON" -e '@.source' 2>/dev/null)"
+		LOC_AT="$(jsonfilter -i "$LOCATION_JSON" -e '@.sampledAtUtc' 2>/dev/null)"
+		case "$LOC_CRS" in WGS84|GCJ02) ;; *) LOC_CRS=WGS84 ;; esac
+		case "$LOC_SRC" in GNSS|LBS) ;; *) LOC_SRC=LBS ;; esac
+		case "$LOC_AT" in *[!0-9TZ:.+-]*|'') LOC_AT= ;; esac
+		if [ "$(json_number "$LOC_LAT")" != null ] && [ "$(json_number "$LOC_LON")" != null ]; then
+			LOCATION_FRAGMENT="$(printf '"location":{"latitude":%s,"longitude":%s,"coordinateSystem":"%s","source":"%s"%s},' \
+				"$LOC_LAT" "$LOC_LON" "$LOC_CRS" "$LOC_SRC" "${LOC_AT:+,\"sampledAtUtc\":\"$LOC_AT\"}")"
+		else
+			echo '[WARN] location file has no numeric latitude/longitude; uploading without location' >&2
+		fi
+	else
+		echo "[WARN] location file is not readable: $LOCATION_JSON; uploading without location" >&2
+	fi
+fi
+
+METADATA_VERSION="$(metadata_value '' metadata_version)"
+METADATA_CAPTURE_ID="$(metadata_value '' capture_id)"
+RECORD_STATUS="$(metadata_value '' record_status)"
+BOARD_TIME_VALID="$(metadata_value '' system_time_valid)"
+BOARD_UPTIME="$(metadata_value '' uptime_seconds)"
+DECLARED_PHOTO_SHA="$(metadata_value '' jpeg_sha256)"
+PHOTO_SHA="$(sha256sum "$PHOTO" | awk '{print $1}')"
+METADATA_SHA="$(sha256sum "$METADATA" | awk '{print $1}')"
+PHOTO_BYTES="$(wc -c < "$PHOTO" | tr -d ' ')"
+METADATA_BYTES="$(wc -c < "$METADATA" | tr -d ' ')"
+[ "$METADATA_VERSION" = 3 ] || { echo '[FAIL] metadata version must be 3' >&2; exit 1; }
+[ "$METADATA_CAPTURE_ID" = "$CAPTURE_ID" ] || { echo '[FAIL] metadata UUID mismatch' >&2; exit 1; }
+[ "$DECLARED_PHOTO_SHA" = "$PHOTO_SHA" ] || { echo '[FAIL] photo SHA-256 mismatch' >&2; exit 1; }
+case "$RECORD_STATUS" in COMPLETE|PARTIAL) ;; *) echo '[FAIL] invalid record status' >&2; exit 1 ;; esac
+
+ENV_RESULT="$(metadata_value environment RESULT)"
+ENV_ERROR="$(metadata_value environment ERROR_CODE)"
+ENV_TEMP="$(metadata_value environment TEMPERATURE_CENTI_C)"
+ENV_HUMIDITY="$(metadata_value environment HUMIDITY_CENTI_RH)"
+ENV_CRC="$(metadata_value environment CRC_OK)"
+ENV_UPTIME="$(metadata_value environment SAMPLED_UPTIME_MS)"
+POWER_RESULT="$(metadata_value power RESULT)"
+POWER_ERROR="$(metadata_value power ERROR_CODE)"
+BATTERY_MV="$(metadata_value power BATTERY_MV)"
+CHARGE_STATE="$(metadata_value power CHARGE_STATE)"
+VBUS_GOOD="$(metadata_value power VBUS_GOOD)"
+VBUS_MV="$(metadata_value power VBUS_MV)"
+CHARGE_CURRENT="$(metadata_value power CHARGE_CURRENT_MA)"
+FAULT_REG="$(metadata_value power FAULT_REG)"
+POWER_UPTIME="$(metadata_value power SAMPLED_UPTIME_MS)"
+for SAFE_VALUE in "$ENV_RESULT" "$ENV_ERROR" "$POWER_RESULT" "$POWER_ERROR" "$CHARGE_STATE" "$FAULT_REG"; do
+	case "$SAFE_VALUE" in ''|*[!A-Za-z0-9_x-]*) echo '[FAIL] metadata contains an unsafe string value' >&2; exit 1 ;; esac
+done
+
+cat > "$TMP_PREFIX.curl" <<EOF
+silent
+show-error
+fail
+connect-timeout = 15
+max-time = 60
+header = "X-Device-Key: $MOSQUITO_DEVICE_API_KEY"
+EOF
+chmod 0600 "$TMP_PREFIX.curl"
+SERVER_UTC="$(curl -K "$TMP_PREFIX.curl" "$MOSQUITO_API_BASE_URL/health" |
+	jsonfilter -e '@.utc' 2>/dev/null)"
+[ -n "$SERVER_UTC" ] || { echo '[FAIL] cannot obtain trusted cloud time' >&2; exit 1; }
+case "$BOARD_TIME_VALID" in yes) BOARD_TIME_JSON=true ;; *) BOARD_TIME_JSON=false ;; esac
+case "$ENV_CRC" in 1) ENV_CRC_JSON=true ;; 0) ENV_CRC_JSON=false ;; *) ENV_CRC_JSON=null ;; esac
+case "$VBUS_GOOD" in 1) VBUS_JSON=true ;; 0) VBUS_JSON=false ;; *) VBUS_JSON=null ;; esac
+
+{
+	printf '{'
+	printf '"captureId":"%s",' "$CAPTURE_ID"
+	printf '"deviceSerial":"MOSQUITO-T113-DEV",'
+	printf '"deviceId":"%s",' "$DEVICE_ID"
+	printf '"uploadRoute":"BOARD_4G",'
+	printf '"triggerSource":"%s",' "$TRIGGER"
+	[ -z "$COMMAND_ID" ] || printf '"commandId":"%s",' "$COMMAND_ID"
+	printf '%s' "$LOCATION_FRAGMENT"
+	printf '"capturedAtUtc":"%s",' "$SERVER_UTC"
+	printf '"boardUptimeSeconds":%s,' "$(json_number "$BOARD_UPTIME")"
+	printf '"boardTimeValid":%s,' "$BOARD_TIME_JSON"
+	printf '"metadataVersion":3,"boardRecordStatus":"%s",' "$RECORD_STATUS"
+	printf '"photoSha256":"%s","metadataSha256":"%s",' "$PHOTO_SHA" "$METADATA_SHA"
+	printf '"environment":{"result":"%s","errorCode":"%s",' "$ENV_RESULT" "$ENV_ERROR"
+	printf '"temperatureCentiC":%s,"humidityCentiRh":%s,' "$(json_number "$ENV_TEMP")" "$(json_number "$ENV_HUMIDITY")"
+	printf '"crcOk":%s,"sampledUptimeMs":%s},' "$ENV_CRC_JSON" "$(json_number "$ENV_UPTIME")"
+	printf '"power":{"result":"%s","errorCode":"%s",' "$POWER_RESULT" "$POWER_ERROR"
+	printf '"batteryMv":%s,"chargeState":"%s","vbusGood":%s,' "$(json_number "$BATTERY_MV")" "$CHARGE_STATE" "$VBUS_JSON"
+	printf '"vbusMv":%s,"chargeCurrentMa":%s,"faultRegister":"%s",' "$(json_number "$VBUS_MV")" "$(json_number "$CHARGE_CURRENT")" "$FAULT_REG"
+	printf '"sampledUptimeMs":%s}}\n' "$(json_number "$POWER_UPTIME")"
+} > "$TMP_PREFIX.manifest"
+
+curl -K "$TMP_PREFIX.curl" -H 'Content-Type: application/json' \
+	--data-binary "@$TMP_PREFIX.manifest" "$MOSQUITO_API_BASE_URL/api/captures" > "$TMP_PREFIX.create" || {
+	echo '[FAIL] cloud capture create failed' >&2
+	exit 1
+}
+CLOUD_STATUS="$(jsonfilter -i "$TMP_PREFIX.create" -e '@.status' 2>/dev/null)"
+if [ "$CLOUD_STATUS" = Complete ] || [ "$CLOUD_STATUS" = Partial ]; then
+	echo "CLOUD_CAPTURE_STATUS=$CLOUD_STATUS"
+	exit 0
+fi
+PHOTO_URL="$(jsonfilter -i "$TMP_PREFIX.create" -e '@.photoUpload.url' 2>/dev/null)"
+METADATA_URL="$(jsonfilter -i "$TMP_PREFIX.create" -e '@.metadataUpload.url' 2>/dev/null)"
+[ -n "$PHOTO_URL" ] && [ -n "$METADATA_URL" ] || {
+	echo '[FAIL] cloud did not return both upload URLs' >&2
+	exit 1
+}
+
+curl -fsS --connect-timeout 15 --max-time 180 -X PUT \
+	-H 'Content-Type: image/jpeg' \
+	-H 'x-oss-forbid-overwrite: true' \
+	-H 'x-oss-server-side-encryption: AES256' \
+	-H "x-oss-meta-sha256: $PHOTO_SHA" \
+	--upload-file "$PHOTO" "$PHOTO_URL" > "$TMP_PREFIX.photo-response" || {
+	echo '[FAIL] photo upload failed' >&2
+	exit 1
+}
+curl -fsS --connect-timeout 15 --max-time 60 -X PUT \
+	-H 'Content-Type: text/plain; charset=utf-8' \
+	-H 'x-oss-forbid-overwrite: true' \
+	-H 'x-oss-server-side-encryption: AES256' \
+	-H "x-oss-meta-sha256: $METADATA_SHA" \
+	--upload-file "$METADATA" "$METADATA_URL" > "$TMP_PREFIX.metadata-response" || {
+	echo '[FAIL] metadata upload failed' >&2
+	exit 1
+}
+printf '{"photoBytes":%s,"metadataBytes":%s}\n' "$PHOTO_BYTES" "$METADATA_BYTES" > "$TMP_PREFIX.complete-request"
+curl -K "$TMP_PREFIX.curl" -H 'Content-Type: application/json' \
+	--data-binary "@$TMP_PREFIX.complete-request" \
+	"$MOSQUITO_API_BASE_URL/api/captures/$CAPTURE_ID/complete" > "$TMP_PREFIX.complete" || {
+	echo '[FAIL] cloud completion failed' >&2
+	exit 1
+}
+CLOUD_STATUS="$(jsonfilter -i "$TMP_PREFIX.complete" -e '@.status' 2>/dev/null)"
+case "$CLOUD_STATUS" in
+	Complete|Partial) echo "CLOUD_CAPTURE_STATUS=$CLOUD_STATUS" ;;
+	*) echo '[FAIL] cloud returned an invalid completion status' >&2; exit 1 ;;
+esac

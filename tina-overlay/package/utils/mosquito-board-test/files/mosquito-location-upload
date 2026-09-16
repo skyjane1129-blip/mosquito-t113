@@ -1,0 +1,43 @@
+#!/bin/sh
+
+# One positioning cycle. GNSS and PPP are serialized because both use ttyS1.
+CONFIG_FILE="${MOSQUITO_LOCATION_CONFIG:-/etc/mosquito/location.conf}"
+OUTBOX="${MOSQUITO_LOCATION_OUTBOX:-/mnt/UDISK/mosquito-test/location/outbox}"
+[ -r "$CONFIG_FILE" ] || { echo "[FAIL] missing $CONFIG_FILE" >&2; exit 2; }
+. "$CONFIG_FILE"
+DEVICE_ID="${MOSQUITO_LOCATION_DEVICE_ID:-MOSQUITO-T113-DEV}"
+TRACCAR_URL="${MOSQUITO_TRACCAR_URL:?MOSQUITO_TRACCAR_URL is required}"
+APN="${MOSQUITO_APN:-3gnet}"
+case "$TRACCAR_URL" in http://*|https://*) ;; *) echo '[FAIL] Traccar URL must start with http:// or https://' >&2; exit 2 ;; esac
+case "$DEVICE_ID" in ''|*[!A-Za-z0-9._:-]*) echo '[FAIL] invalid device id' >&2; exit 2 ;; esac
+command -v mosquito-location >/dev/null 2>&1 || { echo '[FAIL] mosquito-location is unavailable' >&2; exit 1; }
+command -v 4g-start >/dev/null 2>&1 || { echo '[FAIL] 4g-start is unavailable' >&2; exit 1; }
+command -v 4g-stop >/dev/null 2>&1 || { echo '[FAIL] 4g-stop is unavailable' >&2; exit 1; }
+command -v curl >/dev/null 2>&1 || { echo '[FAIL] curl is unavailable' >&2; exit 1; }
+mkdir -p "$OUTBOX" || { echo '[FAIL] cannot create location outbox' >&2; exit 1; }
+FIX="/tmp/mosquito-location-$$.json"
+trap 'rm -f "$FIX"' 0
+if mosquito-location >"$FIX"; then :; else
+	status=$?
+	echo "[WARN] GNSS did not produce a valid fix (status $status)" >&2
+	exit 3
+fi
+json_value() { key="$1"; awk -v k="\"$key\":" '{ p=index($0,k); if (p) { v=substr($0,p+length(k)); sub(/^"/,"",v); sub(/[",}].*$/, "", v); print v; exit } }' "$FIX"; }
+UTC="$(json_value utc)"; LAT="$(json_value lat_wgs84)"; LON="$(json_value lon_wgs84)"
+ALT="$(json_value altitude_m)"; SPEED="$(json_value speed_knots)"; BEARING="$(json_value bearing_deg)"; HDOP="$(json_value hdop)"
+case "$UTC" in [0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]*) ;; *) echo '[FAIL] invalid GNSS UTC' >&2; exit 1 ;; esac
+QUEUE_FILE="$OUTBOX/${DEVICE_ID}-${UTC}.url"
+printf '%s\n' "$TRACCAR_URL/?id=$DEVICE_ID&valid=true&lat=$LAT&lon=$LON&timestamp=$UTC&speed=$SPEED&bearing=$BEARING&altitude=$ALT&hdop=$HDOP" > "$QUEUE_FILE"
+if ! 4g-start "$APN" >/tmp/mosquito-location-4g.log 2>&1; then echo '[WARN] 4G failed; location request queued' >&2; exit 4; fi
+FAILED=0
+for FILE in "$OUTBOX"/*.url; do
+	[ -f "$FILE" ] || continue
+	if curl -fsS --connect-timeout 15 --max-time 30 "$(sed -n '1p' "$FILE")" >/dev/null; then
+		rm -f "$FILE"; echo "[PASS] location uploaded: $(basename "$FILE")"
+	else
+		FAILED=1; echo "[WARN] upload failed; retained $(basename "$FILE")" >&2
+	fi
+done
+4g-stop >/tmp/mosquito-location-4g-stop.log 2>&1 || true
+[ "$FAILED" -eq 0 ] || exit 5
+exit 0

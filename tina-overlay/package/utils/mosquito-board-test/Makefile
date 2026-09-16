@@ -1,7 +1,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=mosquito-board-test
-PKG_VERSION:=2.18
+PKG_VERSION:=2.19
 PKG_RELEASE:=1
 PKG_BUILD_DIR:=$(COMPILE_DIR)/$(PKG_NAME)
 
@@ -11,7 +11,7 @@ define Package/mosquito-board-test
   SECTION:=utils
   CATEGORY:=Utilities
   TITLE:=Mosquito T113-S3 whole-board diagnostic
-  DEPENDS:=+adb +usbutils +v4l-utils +ppp +chat +curl +ca-certificates
+  DEPENDS:=+adb +usbutils +v4l-utils +ppp +chat +curl +ca-certificates +jsonfilter
 endef
 
 define Package/mosquito-board-test/description
@@ -36,6 +36,8 @@ endef
 define Package/mosquito-board-test/install
 	$(INSTALL_DIR) $(1)/usr/bin
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/mosquito-board-test $(1)/usr/bin/
+	$(INSTALL_BIN) $(PKG_BUILD_DIR)/mosquito-location $(1)/usr/bin/
+	$(INSTALL_BIN) $(PKG_BUILD_DIR)/mosquito-lbs $(1)/usr/bin/
 	$(LN) mosquito-board-test $(1)/usr/bin/board-test
 	$(LN) mosquito-board-test $(1)/usr/bin/air-test
 	$(LN) mosquito-board-test $(1)/usr/bin/gnss-test
@@ -51,14 +53,20 @@ define Package/mosquito-board-test/install
 	$(INSTALL_BIN) ./files/camera-test $(1)/usr/bin/
 	$(INSTALL_BIN) ./files/camera-test1 $(1)/usr/bin/
 	$(INSTALL_BIN) ./files/mosquito-capture $(1)/usr/bin/
+	$(INSTALL_BIN) ./files/mosquito-capture-4g $(1)/usr/bin/
+	$(INSTALL_BIN) ./files/mosquito-upload-4g $(1)/usr/bin/
+	$(INSTALL_BIN) ./files/mosquito-remote-agent $(1)/usr/bin/
 	$(INSTALL_BIN) ./files/camera-test0 $(1)/usr/bin/
 	$(INSTALL_BIN) ./files/mosquito-version $(1)/usr/bin/
 	$(INSTALL_BIN) ./files/4g-start $(1)/usr/bin/
 	$(INSTALL_BIN) ./files/4g-stop $(1)/usr/bin/
 	$(INSTALL_BIN) ./files/photo-upload $(1)/usr/bin/
+	$(INSTALL_BIN) ./files/mosquito-location-upload $(1)/usr/bin/
 	$(INSTALL_DIR) $(1)/etc/ppp/peers
 	$(INSTALL_CONF) ./files/air780eg.peer $(1)/etc/ppp/peers/air780eg
 	$(INSTALL_DIR) $(1)/etc/mosquito
+	$(INSTALL_DATA) ./files/mosquito-location.conf.example $(1)/etc/mosquito/location.conf.example
+	$(INSTALL_DATA) ./files/mosquito-cloud.conf.example $(1)/etc/mosquito/cloud.conf.example
 	$(INSTALL_CONF) ./files/4g.conf $(1)/etc/mosquito/4g.conf
 	$(INSTALL_DATA) ./files/mosquito-version.conf $(1)/etc/mosquito-version
 	$(LN) /tmp/resolv.conf.auto $(1)/etc/resolv.conf

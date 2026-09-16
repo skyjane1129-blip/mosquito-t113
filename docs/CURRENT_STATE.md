@@ -1,6 +1,6 @@
 # Mosquito 当前状态
 
-更新时间：2026-09-09（Asia/Shanghai）
+更新时间：2026-09-10（Asia/Shanghai）
 
 本文只记录已有证据支持的事实。新 Agent 接手时应先读根目录 `AGENTS.md`，再读本文和 `docs/NEXT_IMAGE.md`。
 
@@ -15,6 +15,28 @@ Windows 最新源码随后直接针对该精确 v5.6.4 成品完成真实 WPF �
 真实 WPF 通过后又发现普通启动配置仍优先搜索已删除的 `/data/local/tmp/client-demo`。Windows Agent 已把生产 `appsettings.json` 和代码默认值统一改为 `/usr/bin:/bin`，并同步客户端说明；Release 构建、6 组 Core 测试、模拟 WPF、语义校验及使用生产配置原文件的只读实板检测均为退出码 0。该检测确认 `Connected=true`、`CaptureReady=true`、v5.6.4、metadata v3 和三个板端命令存在。73 个归档文件哈希全部通过，证据为 `build/test-runs/20260909-115342+0800-windows-command-path/`。旧的 runtime-specific/publish 生成目录仍可能保留历史配置，分发前必须从修正后的源码重新生成，不能复用旧目录。
 
 当前结论是：**v5.6.4 精确成品已经烧录，板端直连子集、Windows WPF 实板闭环和生产命令路径修正均通过。** 尚未观察 3 次物理冷启动/UART，也未执行物理 USB 热拔插和 ADB stop/start；后者因板端没有 `nohup`/`setsid`，无法保证杀掉当前 `adbd` 后自动恢复，已安全跳过并保留证据。自动对焦光学画质等相机固定后再验。Windows USB FriendlyName 仍带 v5.6.2 文本、稳定 `DeviceId` 未配置、板端 wall clock 无效，均不影响本轮直连数据闭环但仍需后续处理。下文较早的“未烧录”“Windows GUI 未测”等记录均为历史快照，与本节冲突时以本节为准。
+
+## 0B. 2026-09-10 Air780EG 临时单基站 LBS 实板测试
+
+在精确 v5.6.4 成品上，使用未写入固件的临时 ARM/musl 工具完成一次真实 LBS 测试；没有运行 `gnss-test`、没有启动 PPP、没有烧录或修改镜像。SIM 返回 `READY`，LTE 注册状态为 `1`，分组数据已附着，`CSQ` RSSI 索引为 26（探测轮）和 25（定位轮）。`AT+CIPGSMLOC=?` 与官方端点查询均成功，随后一次 `AT+CIPGSMLOC=1,1` 返回成功，远端退出码为 0；临时数据承载关闭成功，退出后串口锁、PPP 接口和临时进程均不存在。证据见 `build/test-runs/20260910-lbs-O1kvSt/README.md`。
+
+坐标和原始响应只保存在板端 `/tmp/mosquito-lbs-O1kvSt/` 下权限为 0600 的私有文件中，普通状态文档不记录坐标、IMEI、ICCID 或小区标识。该结果证明当前蜂窝网络可返回可解析的单基站估计位置，不等于 GNSS 精度或固定误差承诺；LBS 工具仍未集成到镜像，也未上传地图或云服务。
+
+## 0C. 2026-09-10 远程模式（4G 指令拍照 + LBS）端到端实板通过（临时部署，未制作镜像）
+
+用户决定演示架构：服务端运行在开发客户端所在的 Windows 电脑（.NET 8 API，SQLite + 本地存储），由云主机 frp 转发为公网 `http://139.224.11.244:8086`；客户端与板子都访问该地址。板端在精确 v5.6.4 成品上临时部署 `/data/local/tmp/remote-demo/`（`mosquito-lbs` ARM/musl、`mosquito-upload-4g`、新脚本 `mosquito-remote-agent`、`cloud.conf` 0600），没有修改镜像或 `/etc`。
+
+实测通过链路：客户端真实 WPF 窗口经公网登录 → 远程模式显示设备 `MQ-SH-001` 在线（心跳含温湿度、电压、镜像版本）→ 点击“远程拍照”→ 服务端排队指令 → 板子经 4G 长轮询领取（14:27:52Z）→ `mosquito-capture --focus 500` COMPLETE（14:28:07Z）→ `mosquito-upload-4g` 经 4G 上传照片与 metadata、`CLOUD_CAPTURE_STATUS=Complete`（14:28:43Z）→ 回执 Completed → 客户端 52 秒内显示 3264×2448 照片、温度 31.66 °C、湿度 44.20 %RH、电池 4.124 V（WARN `FAULT_REG=0x80`）、LBS 位置（服务端 WGS84→GCJ02）和示意地图标记。这是本项目**首次真实 4G 上传成功**。此前独立的 once 闭环（第三轮）也已通过：心跳 → LBS 定位 → 位置上报 → 领指令 → 拍照 → 上传 Complete（37 s）→ 回执。证据：`build/test-runs/20260910-remote-agent-4g/README.md`（坐标已脱敏）。
+
+本轮发现并修复的板端问题：BusyBox 无 `stat`（上传脚本此前从未能通过配置检查）、无 `tail`；`4g-stop` 后调制解调器需数秒才从 PPP 数据模式回到 AT 模式（LBS 探测改为最多 10 次并在断链后等待 3 秒）；回执 JSON 的 shell 参数展开错误；后台代理随 ADB 会话结束被 SIGHUP 终止（run 模式改为忽略 SIGHUP）；合宙 LBS 一分钟内重复查询返回 `CODE=7`（新增 `MOSQUITO_LOCATION_MIN_SEC=120`）。
+
+当前限制：LBS 为单基站估计（数百米到公里级），刷新需中断 PPP 约 10–15 秒；演示为 HTTP 非标端口与开发默认设备密钥；常驻代理靠 ADB 手动启动（PID 4873 在 adb 会话结束后仍存活），开机自启动依赖 `rc.final` 新增块并需要 `/etc/mosquito-cloud.conf` 含 `MOSQUITO_REMOTE_AGENT=1`，这些只有进入下一镜像才生效；未做物理拔线后的长时间稳定性、`adb reboot`/看门狗。工作区新增/修改文件见 `docs/NEXT_IMAGE.md` 第 0B 节的候选清单；本轮没有 commit、push、tag 或制作镜像。
+
+## 0D. 2026-09-14 v5.6.5 候选镜像已制作（STATIC_PASS / NOT_FLASHED），板子仍运行 v5.6.4
+
+用户当日决定的优先级：周末客户演示前放弃 GNSS（一版天线为无源、RF2 偏置 0 V，留二版板），全力做 4G 定位；随后低功耗；最后批准制作 v5.6.5。当日完成并在 v5.6.4 实板验证的内容：服务端自学习小区算法（`CELL_LEARNED`/`CELL_LEARNED_MEDIAN`，同点回放中位误差 540→74 m，真实链路 37 m）；`Learn` 快速定位学习指令（板端重搜网 + 合宙查询，实测合宙限频≈10 min/次，3 轮≈35 min）；`MOSQUITO_POWER_PROFILE=duty`；远程代理开机自启动块装入现有板子覆盖层并物理冷启动验证（ADB 16 s、代理 22.7 s、PPP 37 s、心跳 141 s）；客户端“快速定位学习”按钮与一键安装包（含 ADB）。详见 `docs/LOCATION_AND_POWER_2026-09-11.md` 与工作区 `docs/4G_SELF_LEARNING_LOCATION.md`。
+
+v5.6.5 镜像 `dev-v5.6.5-remote-learn`（板级包 2.19-1）已按 `docs/NEXT_IMAGE.md` 0B-final 范围制作：`releases/mosquito-t113/2026-09-14-dev-v5.6.5-remote-learn/`，SHA-256 `8ece11ae21bc3bd2b0513415e2f5a6fa407ee883f550709fff8ef88302f28fbb`，证据 `build/firmware-runs/20260914-v565-remote-learn/`。唯一内核改动为 RTC（烧录后验收）。**尚未烧录**；当前板子仍是 v5.6.4 精确成品加覆盖层临时部署。本节与第 0C 节冲突时以本节为准。
 
 ## 0A. 2026-09-08 项目核对补充（构建前历史快照）
 

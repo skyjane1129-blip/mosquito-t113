@@ -1,6 +1,6 @@
 # Mosquito 下一镜像计划
 
-更新时间：2026-09-09（Asia/Shanghai）
+更新时间：2026-09-10（Asia/Shanghai）
 
 ## 0. 2026-09-09 v5.6.4 烧录后最新决定
 
@@ -18,6 +18,47 @@ rootfs_sha256=42922be01976e488cc1b1d32ab83ed151fa2c555b65fee172a8ebd85caa9fbb9
 本镜像只新增本阶段已验证的直连功能：`mosquito-capture`、`mosquito-environment`、`mosquito-power`、相机实现、板测 C 程序、2.18-1 包装和 metadata v3 版本声明。新增 `mosquito-capture-4g`、`mosquito-upload-4g`、云配置、板级包新增 `jsonfilter` 依赖以及 Watchdog/GNSS/CPUFreq/CPUIdle 均排除；云端和新增 4G 直传继续延期。
 
 **当前状态是精确成品已烧录，板端直连子集、Windows WPF 回归和客户端生产命令路径修正均通过。** 已完成环境/电源 10 次、手动焦距 500 三次、metadata/哈希/传感器关联、ADB pull/push、非法 UUID、受控 `PARTIAL`、资源清理和真实 GUI 全流程；普通启动配置与代码默认值均已改为 `/usr/bin:/bin`，生产配置只读实板检测通过。旧的客户端生成/发布目录不得直接分发，应从修正后的源码重新生成。下一步只补 3 次物理冷启动与 UART、USB0 物理热拔插/正反插，以及 UART Root Shell 在场时的 ADB stop/start。自动对焦光学画质继续等相机固定；云端、远程和新增 4G 仍延期。本阶段没有依据继续制作下一个镜像。下文 `0A` 及后续章节保留构建前计划和历史背景；冲突时以本节为准。
+
+2026-09-10 在该精确成品上完成了一次临时 Air780EG 单基站 LBS 实测：驻网、数据附着、官方 LBS 端点和一次 `CIPGSMLOC` 查询均通过，承载清理完成。测试程序和私有结果只在 `build/test-runs/20260910-lbs-O1kvSt/` 与板端 `/tmp` 临时目录中，不属于本镜像内容。下一镜像不得据此自动加入 LBS、地图或云端上传；若产品化，需另行确定位置上报协议、隐私与凭据、刷新周期、误差展示和端到端地图验收。
+
+## 0B. 2026-09-10 远程模式演示后的下一镜像候选（待用户决定）
+
+2026-09-10 远程模式端到端已在精确 v5.6.4 成品上以临时部署通过（见 `docs/CURRENT_STATE.md` 第 0C 节）。按用户要求，所有功能与客户端/服务端联动测试完成后再询问是否制作镜像；本节只列出候选内容，不构成制作授权。
+
+候选 `dev-v5.6.5-remote-demo` 相对 v5.6.4 的内容（均在 `test/lbs-temp-20260910` 工作区，未提交）：
+
+- 板级包 `mosquito-board-test` 2.18 → 2.19：`DEPENDS` 增加 `+jsonfilter`；安装 `mosquito-lbs`（`src/mosquito-lbs.c`，`-lm`）、`mosquito-location`（`src/mosquito-location.c`，GNSS→Traccar，未实测通过，可按需排除）、`mosquito-capture-4g`、`mosquito-upload-4g`、`mosquito-remote-agent`、`mosquito-location-upload`、`/etc/mosquito/cloud.conf.example`、`/etc/mosquito/location.conf.example`。
+- `rc.final` 新增后台块：`/etc/mosquito-cloud.conf` 含 `MOSQUITO_REMOTE_AGENT=1` 且无 `/overlay/mosquito-test/disable-remote-agent` 时，等 overlay/UDISK/`/dev/ttyS1`/工具就绪并延迟 20 秒后 `exec mosquito-remote-agent run`（日志 `/tmp/mosquito-remote-agent-boot.log`）。自动 ADB 块不变。
+- 板端配置不进镜像：`/etc/mosquito-cloud.conf`（0600）需在烧录后通过 ADB/UART 写入（模板为 `cloud.conf.example`，演示值为公网 HTTP 地址、`MOSQUITO_ALLOW_HTTP=1`、设备密钥、`MOSQUITO_DEVICE_ID=MQ-SH-001`、`MOSQUITO_REMOTE_AGENT=1`），或由镜像制作时写入 overlay（需用户决定）。
+- **2026-09-14 已在现有 v5.6.4 板子的可写覆盖层（overlayfs upper=/overlay/upper）上提前装入并冷启动验证了同一套内容**：`/usr/bin/{mosquito-remote-agent,mosquito-lbs,mosquito-upload-4g}`、`/etc/mosquito-cloud.conf`（0600，`MOSQUITO_REMOTE_AGENT=1`）、`rc.final` 末尾追加的远程代理自启动块（原文件备份 `/overlay/mosquito-test/rc.final.v564.orig`）。物理断电再上电一次：ADB 在开机 16 s 回来（不受影响），代理由 rc.final 于 22.7 s 拉起，PPP 37 s 建立，141 s 心跳被服务端接受，设备重新在线。这等于 v5.6.5 门槛中“冷启动确认 rc.final 自启代理且自动 ADB 不受影响”已在同一份代码上通过一次；烧录后仍需在精确成品上复验。板端 `/data/local/tmp/remote-demo/` 仍保留作为手动回退，之后更新脚本时两处都要同步。
+- 需要同步到 SDK 包目录的文件：SDK 侧 `package/utils/mosquito-board-test/` 尚未同步以上 overlay 新文件；制作镜像前必须按 `AGENTS.md` 同步并做静态审计。
+
+2026-09-11 增量（详见 `docs/LOCATION_AND_POWER_2026-09-11.md`，均在当前镜像临时部署实板验证、未提交）：
+- `mosquito-lbs` 升级：`--locate` 额外用 `AT+CCED` 采服务小区+邻区并写入结果 `cells`；新增 `--gnss`（内置 GNSS + `AT+CGNSAID` AGNSS）与 `--at` 诊断。`--self-test` 已扩展并通过。服务端据小区做高德/百度多基站定位与逆方差/中值融合，新增 `GET /api/v2/devices/{id}/location-evaluation` 做精度对照（参考点仅在 `appsettings.Local.json`）。
+- `mosquito-remote-agent` 升级：`MOSQUITO_LOCATION_MODE` 增加 `gnss`/`gnss-lbs`；新增 `MOSQUITO_POWER_PROFILE=always-on|duty` 低功耗占空比（duty 实测远程拍照仍成功）；09-14 新增操作员 `Learn` 指令（快速定位学习：重搜网+LBS 轮次，`MOSQUITO_LEARN_*`），`MOSQUITO_LOCATION_MIN_SEC` 建议 600（合宙实测限频≈10 min）。`cloud.conf.example` 已补全新键与注释。
+- 修复：`rc.final` 与 `mosquito-remote-agent`/`mosquito-upload-4g` 的可执行位（曾被 Windows 写入重置为 644，已恢复 755）；代理在 `/var/run` 不存在时先 `mkdir -p` 再建锁（冷启动 PPP 未起时也能起代理）。
+- 低功耗内核项（2026-09-14 只读调研结论，详见 `docs/LOCATION_AND_POWER_2026-09-11.md` 2c 节）：**CPUFreq、CPUIdle 不纳入**（CPU 已固定跑 720 MHz、VDD_CPU 固定 0.95 V，SDK 无适配驱动/板型已删 idle-states，收益小风险大）；**RTC 已由用户于 2026-09-14 批准纳入**：overlay `device/config/chips/t113/configs/mosquito/linux-5.4/config-5.4` 已把 `# CONFIG_RTC_CLASS is not set` 改为 `CONFIG_RTC_CLASS=y` + `CONFIG_RTC_DRV_SUNXI=y`（连同 HCTOSYS/SYSTOHC=rtc0、NVMEM、INTF_SYSFS/PROC/DEV 常规子项；驱动兼容 `allwinner,sun8iw20-rtc`，DTS 节点已带 `wakeup-source`）。这是本候选中唯一的内核配置改动，无法在当前镜像验证，烧录后必须验收：`/dev/rtc0` 存在、`hwclock -r` 可读、`echo +60 > /sys/class/rtc/rtc0/wakealarm && echo freeze > /sys/power/state` 60 s 后自动唤醒且 ADB/4G 恢复。**默认电源档位保持 `always-on`**（代理默认值与 `cloud.conf.example` 均为 always-on），RTC 不改变演示行为；`sleep` 档留待烧录后按放电实测决定。
+
+制作前门槛（建议）：物理拔掉 Type-C 与串口后，由 ADB 手动启动的代理连续运行至少 1 小时并完成 ≥3 次远程拍照；拔线状态下客户端刷新可见心跳与位置；烧录后冷启动 1 次确认 `rc.final` 自动启动代理且自动 ADB 不受影响。若要合入 `--gnss` 定位，还需在天线修好后完成一次室外 GNSS 定位实测。
+
+### 0B-final. v5.6.5 范围（2026-09-14 用户确认并批准；**镜像已于当晚制作完成，状态 STATIC_PASS / NOT_FLASHED**）
+
+成品：`releases/mosquito-t113/2026-09-14-dev-v5.6.5-remote-learn/mosquito-t113-dev-v5.6.5-remote-learn.img`（11,654,144 bytes，SHA-256 `8ece11ae21bc3bd2b0513415e2f5a6fa407ee883f550709fff8ef88302f28fbb`），证据 `build/firmware-runs/20260914-v565-remote-learn/`，Windows 烧录副本 `C:\project\mosquito\firmware\`。烧录与验收步骤见发布目录 README。下面是制作前的范围表（已按此执行）：
+
+镜像身份建议 `dev-v5.6.5-remote-learn`，板级包 2.19-1。相对 v5.6.4 的全部改动：
+
+| # | 改动 | 状态 |
+|---|---|---|
+| 1 | 板级包 Makefile：2.18→2.19，`DEPENDS +jsonfilter`，安装 `mosquito-lbs`/`mosquito-location`（C）与 6 个脚本/模板 | 源码就绪 |
+| 2 | `src/mosquito-lbs.c`：单基站 LBS + `AT+CCED` 邻区采集 + `--gnss`（AGNSS）+ `--at` 诊断，自检通过 | 当前镜像实板验证 |
+| 3 | `files/mosquito-remote-agent`：心跳/长轮询/4G 上传/LBS；`MOSQUITO_LOCATION_MODE` lbs/gnss/gnss-lbs；`MOSQUITO_POWER_PROFILE` always-on/duty；`Learn` 快速定位学习指令；`/var/run` 冷启动修复；SIGHUP 忽略 | 当前镜像实板验证（含冷启动自启、duty、Learn） |
+| 4 | `files/mosquito-upload-4g`、`mosquito-capture-4g`、`mosquito-location-upload`、`mosquito-cloud.conf.example`、`mosquito-location.conf.example` | 上传已实板验证；location-upload（Traccar）未验证，可按需排除 |
+| 5 | `rc.final` 末尾远程代理自启动块（读 `/etc/mosquito-cloud.conf` 的 `MOSQUITO_REMOTE_AGENT=1`，可用 `/overlay/mosquito-test/disable-remote-agent` 禁用） | 已装入现有板子覆盖层并冷启动验证 |
+| 6 | 内核 `config-5.4`：`CONFIG_RTC_CLASS=y`、`CONFIG_RTC_DRV_SUNXI=y` 及常规子项（唯一内核改动） | 用户批准；只能烧录后验收 |
+| 7 | 可执行位修复：`rc.final`、`mosquito-remote-agent`、`mosquito-upload-4g` 均为 755 | 已修 |
+| 8 | 不纳入：cpufreq、cpuidle、Watchdog/`adb reboot`、GNSS 硬件相关（二版板）、`/etc/mosquito-cloud.conf` 本体（烧录后经 ADB 写入） | 决定 |
+
+默认行为：电源档 `always-on`，定位 `lbs`，定位最小间隔 600 s，学习 3 轮。制作流程照 `build/firmware-runs/20260908-v564-client-direct/BUILD_SUMMARY.md`：快照脏树 → 白名单同步到 SDK（含本次 config-5.4）→ package clean/compile → `make -j1 V=s` → 官方 `pack`（沙箱拦截时需授权外层执行）→ 容器/rootfs 反查审计 → 范围审计、凭据扫描 → 复制到 `releases/` 并生成 sha256 与 README。
 
 ## 0A. 2026-09-08 构建前历史快照（不可作为当前执行入口）
 

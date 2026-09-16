@@ -1,0 +1,575 @@
+#!/bin/sh
+
+# Mosquito remote agent (demo): keeps the Air780EG PPP link up, long-polls the cloud for
+# capture commands, uploads captures over 4G, sends heartbeats and refreshes the LBS position.
+#
+#   mosquito-remote-agent run      main loop (started by rc.final when MOSQUITO_REMOTE_AGENT=1)
+#   mosquito-remote-agent once     one heartbeat, one location refresh and one command poll
+#   mosquito-remote-agent status   print state files
+#   mosquito-remote-agent stop     terminate the running loop
+#
+# GNSS/LBS and PPP share /dev/ttyS1, so the location refresh drops PPP, runs mosquito-lbs and
+# re-establishes PPP afterwards. Coordinates are stored only under /tmp and the private overlay dir.
+
+CONFIG_FILE="${MOSQUITO_CLOUD_CONFIG:-/etc/mosquito-cloud.conf}"
+STATE_DIR=/tmp/mosquito-remote-agent
+PERSIST_DIR=/overlay/mosquito-test/remote-agent
+LOCK_DIR=/var/run/mosquito-remote-agent.lock
+LOG="$STATE_DIR/agent.log"
+CURL_CONF="$STATE_DIR/curl.conf"
+LOCATION_FILE="$STATE_DIR/location.json"
+LAST_HEARTBEAT=0
+LAST_LOCATION=0
+LAST_FIX=0
+LOCATION_DIRTY=0
+MODE="${1:-run}"
+# The loop must outlive an ADB shell that started it and the USB link being unplugged.
+[ "$MODE" = run ] && trap '' 1
+
+uptime_s()
+{
+	cut -d. -f1 /proc/uptime 2>/dev/null || echo 0
+}
+
+log()
+{
+	MSG="[$(date '+%Y-%m-%dT%H:%M:%S' 2>/dev/null) up=$(uptime_s)] $*"
+	echo "$MSG"
+	echo "$MSG" >> "$LOG"
+	if [ "$(wc -c < "$LOG" 2>/dev/null | tr -d ' ')" -gt 262144 ] 2>/dev/null; then
+		mv "$LOG" "$LOG.1" 2>/dev/null
+	fi
+}
+
+persist_log()
+{
+	mkdir -p "$PERSIST_DIR" 2>/dev/null
+	cp "$LOG" "$PERSIST_DIR/agent.log" 2>/dev/null
+}
+
+kv()
+{
+	sed -n "s/^$2=//p" "$1" 2>/dev/null | sed -n '1p'
+}
+
+json_number()
+{
+	case "$1" in ''|*[!0-9.-]*) printf 'null' ;; *) printf '%s' "$1" ;; esac
+}
+
+json_safe()
+{
+	case "$1" in ''|*[!A-Za-z0-9_x.-]*) printf 'UNKNOWN' ;; *) printf '%s' "$1" ;; esac
+}
+
+json_bool01()
+{
+	case "$1" in 1) printf 'true' ;; 0) printf 'false' ;; *) printf 'null' ;; esac
+}
+
+load_config()
+{
+	[ -r "$CONFIG_FILE" ] || { echo "[FAIL] config not readable: $CONFIG_FILE" >&2; return 2; }
+	# BusyBox on this image has no stat applet; read the mode string from ls -ld instead.
+	CONFIG_MODE="$(ls -ld "$CONFIG_FILE" 2>/dev/null | cut -c1-10)"
+	case "$CONFIG_MODE" in
+		????------) ;;
+		'') echo '[FAIL] cannot verify config permissions' >&2; return 2 ;;
+		*) echo "[FAIL] config must be mode 0600, got $CONFIG_MODE" >&2; return 2 ;;
+	esac
+	. "$CONFIG_FILE"
+	: "${MOSQUITO_API_BASE_URL:?MOSQUITO_API_BASE_URL is required}"
+	: "${MOSQUITO_DEVICE_API_KEY:?MOSQUITO_DEVICE_API_KEY is required}"
+	API="${MOSQUITO_API_BASE_URL%/}"
+	case "$API" in
+		https://*) ;;
+		http://*) [ "${MOSQUITO_ALLOW_HTTP:-0}" = 1 ] || { echo '[FAIL] HTTP cloud API is forbidden' >&2; return 2; } ;;
+		*) echo '[FAIL] cloud API URL must start with https://' >&2; return 2 ;;
+	esac
+	DEVICE_ID="${MOSQUITO_DEVICE_ID:-MOSQUITO-T113-DEV}"
+	case "$DEVICE_ID" in ''|*[!A-Za-z0-9._:-]*) echo '[FAIL] invalid MOSQUITO_DEVICE_ID' >&2; return 2 ;; esac
+	APN="${MOSQUITO_APN:-3gnet}"
+	POLL_WAIT="${MOSQUITO_POLL_WAIT_SEC:-25}"
+	HEARTBEAT_SEC="${MOSQUITO_HEARTBEAT_SEC:-120}"
+	LOCATION_SEC="${MOSQUITO_LOCATION_SEC:-900}"
+	LOCATION_MODE="${MOSQUITO_LOCATION_MODE:-lbs}"
+	LOCATION_AFTER_CAPTURE="${MOSQUITO_LOCATION_AFTER_CAPTURE:-1}"
+	LOCATION_MIN_SEC="${MOSQUITO_LOCATION_MIN_SEC:-120}"
+	DEFAULT_FOCUS="${MOSQUITO_DEFAULT_FOCUS:-500}"
+	# gnss-lbs tries the built-in GNSS (with AGNSS over the modem bearer) first and falls back to LBS.
+	GNSS_TIMEOUT="${MOSQUITO_GNSS_TIMEOUT_SEC:-180}"
+	AGNSS="${MOSQUITO_AGNSS:-1}"
+	case "$LOCATION_MODE" in lbs|gnss|gnss-lbs|none) ;; *) echo '[FAIL] MOSQUITO_LOCATION_MODE must be lbs, gnss, gnss-lbs or none' >&2; return 2 ;; esac
+	# Power profile. always-on: keep PPP up and long-poll (fast remote response, highest power, the demo
+	# default). duty: after an idle poll finds nothing, drop PPP, let the modem light-sleep and idle for
+	# IDLE_SLEEP_SEC before reconnecting; remote commands then arrive within IDLE_SLEEP_SEC + reconnect.
+	POWER_PROFILE="${MOSQUITO_POWER_PROFILE:-always-on}"
+	IDLE_SLEEP_SEC="${MOSQUITO_IDLE_SLEEP_SEC:-60}"
+	MODEM_SLEEP="${MOSQUITO_MODEM_SLEEP:-1}"
+	# Fast site learning (Learn command): rounds of "modem re-search + LBS fix"; the re-search makes the
+	# modem camp on the strongest (nearest) cell so the server learns that cell's position quickly.
+	LEARN_ROUNDS="${MOSQUITO_LEARN_ROUNDS:-3}"
+	LEARN_RESEARCH_SEC="${MOSQUITO_LEARN_RESEARCH_SEC:-40}"
+	LEARN_RETRIES="${MOSQUITO_LEARN_RETRIES:-1}"
+	# Measured 2026-09-14: the free Luat lookup succeeds only when >= ~10 min have passed since the
+	# previous lookup for this IMEI (documented 2 min is not what we get), regardless of modem reboots.
+	LEARN_QUERY_GAP_SEC="${MOSQUITO_LEARN_QUERY_GAP_SEC:-600}"
+	case "$POWER_PROFILE" in always-on|duty) ;; *) echo '[FAIL] MOSQUITO_POWER_PROFILE must be always-on or duty' >&2; return 2 ;; esac
+	for N in "$POLL_WAIT" "$HEARTBEAT_SEC" "$LOCATION_SEC" "$LOCATION_MIN_SEC" "$DEFAULT_FOCUS" "$GNSS_TIMEOUT" "$IDLE_SLEEP_SEC" "$LEARN_ROUNDS" "$LEARN_RESEARCH_SEC" "$LEARN_RETRIES" "$LEARN_QUERY_GAP_SEC"; do
+		case "$N" in ''|*[!0-9]*) echo '[FAIL] numeric config value expected' >&2; return 2 ;; esac
+	done
+	mkdir -p "$STATE_DIR" || return 1
+	chmod 0700 "$STATE_DIR"
+	cat > "$CURL_CONF" <<EOF
+silent
+show-error
+connect-timeout = 15
+header = "X-Device-Key: $MOSQUITO_DEVICE_API_KEY"
+EOF
+	chmod 0600 "$CURL_CONF"
+	return 0
+}
+
+# api_call METHOD PATH BODY_FILE_OR_EMPTY MAX_TIME OUT_FILE -> prints the HTTP status code
+api_call()
+{
+	if [ -n "$3" ]; then
+		curl -K "$CURL_CONF" --max-time "$4" -X "$1" -H 'Content-Type: application/json' \
+			--data-binary "@$3" -o "$5" -w '%{http_code}' "$API$2" 2>>"$STATE_DIR/curl.err"
+	else
+		curl -K "$CURL_CONF" --max-time "$4" -X "$1" -o "$5" -w '%{http_code}' "$API$2" 2>>"$STATE_DIR/curl.err"
+	fi
+}
+
+link_up()
+{
+	ip link show ppp0 >/dev/null 2>&1
+}
+
+ensure_link()
+{
+	link_up && return 0
+	log "[INFO] bringing up PPP (APN=$APN)"
+	if 4g-start "$APN" > "$STATE_DIR/4g-start.log" 2>&1; then
+		log '[PASS] PPP is up'
+		return 0
+	fi
+	log "[FAIL] 4g-start failed: $(sed -n '$p' "$STATE_DIR/4g-start.log" 2>/dev/null)"
+	return 1
+}
+
+drop_link()
+{
+	4g-stop > "$STATE_DIR/4g-stop.log" 2>&1
+	# The modem needs a few seconds to drop from PPP data mode back to AT command mode.
+	sleep 3
+	log "[INFO] PPP stopped for UART diagnostics"
+}
+
+environment_json()
+{
+	mosquito-environment --machine > "$STATE_DIR/environment.txt" 2>/dev/null
+	F="$STATE_DIR/environment.txt"
+	printf '{"result":"%s","errorCode":"%s","temperatureCentiC":%s,"humidityCentiRh":%s,"crcOk":%s,"sampledUptimeMs":%s}' \
+		"$(json_safe "$(kv "$F" RESULT)")" "$(json_safe "$(kv "$F" ERROR_CODE)")" \
+		"$(json_number "$(kv "$F" TEMPERATURE_CENTI_C)")" "$(json_number "$(kv "$F" HUMIDITY_CENTI_RH)")" \
+		"$(json_bool01 "$(kv "$F" CRC_OK)")" "$(json_number "$(kv "$F" SAMPLED_UPTIME_MS)")"
+}
+
+power_json()
+{
+	mosquito-power --machine > "$STATE_DIR/power.txt" 2>/dev/null
+	F="$STATE_DIR/power.txt"
+	printf '{"result":"%s","errorCode":"%s","batteryMv":%s,"chargeState":"%s","vbusGood":%s,"vbusMv":%s,"chargeCurrentMa":%s,"faultRegister":"%s","sampledUptimeMs":%s}' \
+		"$(json_safe "$(kv "$F" RESULT)")" "$(json_safe "$(kv "$F" ERROR_CODE)")" \
+		"$(json_number "$(kv "$F" BATTERY_MV)")" "$(json_safe "$(kv "$F" CHARGE_STATE)")" \
+		"$(json_bool01 "$(kv "$F" VBUS_GOOD)")" "$(json_number "$(kv "$F" VBUS_MV)")" \
+		"$(json_number "$(kv "$F" CHARGE_CURRENT_MA)")" "$(json_safe "$(kv "$F" FAULT_REG)")" \
+		"$(json_number "$(kv "$F" SAMPLED_UPTIME_MS)")"
+}
+
+location_source()
+{
+	SRC="$(jsonfilter -i "$LOCATION_FILE" -e '@.source' 2>/dev/null)"
+	case "$SRC" in GNSS|LBS) printf '%s' "$SRC" ;; *) printf 'LBS' ;; esac
+}
+
+location_fragment()
+{
+	[ -r "$LOCATION_FILE" ] || return 0
+	LAT="$(jsonfilter -i "$LOCATION_FILE" -e '@.latitude' 2>/dev/null)"
+	LON="$(jsonfilter -i "$LOCATION_FILE" -e '@.longitude' 2>/dev/null)"
+	[ "$(json_number "$LAT")" != null ] && [ "$(json_number "$LON")" != null ] || return 0
+	printf ',"location":{"latitude":%s,"longitude":%s,"coordinateSystem":"WGS84","source":"%s"}' "$LAT" "$LON" "$(location_source)"
+}
+
+# Writes $LOCATION_FILE (one line, server report shape minus deviceId) from a mosquito-lbs private
+# result plus the serving/neighbour cell list, and remembers it across reboots in the overlay.
+store_location()
+{
+	LAT="$(jsonfilter -i "$1" -e '@.latitude' 2>/dev/null)"
+	LON="$(jsonfilter -i "$1" -e '@.longitude' 2>/dev/null)"
+	ACC="$(jsonfilter -i "$1" -e '@.accuracy_m' 2>/dev/null)"
+	[ "$(json_number "$LAT")" != null ] && [ "$(json_number "$LON")" != null ] || return 1
+	CELLS="$(cat "$2" 2>/dev/null)"
+	case "$CELLS" in \[*\]) ;; *) CELLS='[]' ;; esac
+	printf '{"latitude":%s,"longitude":%s,"coordinateSystem":"WGS84","source":"%s","accuracyMeters":%s,"cells":%s}\n' \
+		"$LAT" "$LON" "$3" "$(json_number "$ACC")" "$CELLS" > "$LOCATION_FILE"
+	chmod 0600 "$LOCATION_FILE"
+	mkdir -p "$PERSIST_DIR" && cp "$LOCATION_FILE" "$PERSIST_DIR/last-location.json" 2>/dev/null
+	LOCATION_DIRTY=1
+	LAST_FIX="$(uptime_s)"
+	return 0
+}
+
+heartbeat()
+{
+	IMAGE="$(json_safe "$(kv /etc/mosquito-version MOSQUITO_IMAGE)")"
+	{
+		printf '{"deviceId":"%s","deviceSerial":"MOSQUITO-T113-DEV","imageVersion":"%s","boardUptimeSeconds":%s,' \
+			"$DEVICE_ID" "$IMAGE" "$(uptime_s)"
+		printf '"environment":%s,"power":%s' "$(environment_json)" "$(power_json)"
+		location_fragment
+		printf '}\n'
+	} > "$STATE_DIR/heartbeat.json"
+	CODE="$(api_call POST /api/device/heartbeat "$STATE_DIR/heartbeat.json" 30 "$STATE_DIR/heartbeat.response")"
+	if [ "$CODE" = 200 ]; then
+		LAST_HEARTBEAT="$(uptime_s)"
+		log "[PASS] heartbeat accepted"
+		return 0
+	fi
+	log "[WARN] heartbeat failed http=$CODE"
+	return 1
+}
+
+post_location()
+{
+	[ -r "$LOCATION_FILE" ] || return 1
+	LAT="$(jsonfilter -i "$LOCATION_FILE" -e '@.latitude' 2>/dev/null)"
+	LON="$(jsonfilter -i "$LOCATION_FILE" -e '@.longitude' 2>/dev/null)"
+	[ "$(json_number "$LAT")" != null ] && [ "$(json_number "$LON")" != null ] || return 1
+	# The state file already has the report shape; only the device id is added in front.
+	sed "1s/^{/{\"deviceId\":\"$DEVICE_ID\",/" "$LOCATION_FILE" > "$STATE_DIR/location-report.json"
+	CODE="$(api_call POST /api/device/location "$STATE_DIR/location-report.json" 30 "$STATE_DIR/location.response")"
+	if [ "$CODE" = 200 ]; then
+		LOCATION_DIRTY=0
+		log "[PASS] location reported ($(location_source), WGS84)"
+		return 0
+	fi
+	log "[WARN] location report failed http=$CODE"
+	return 1
+}
+
+# Runs GNSS and/or the single-cell LBS query on the shared UART; requires PPP to be down.
+# Every result carries the serving/neighbour cell list so the server can run multi-cell locators.
+refresh_location()
+{
+	case "$LOCATION_MODE" in lbs|gnss|gnss-lbs) ;; *) LAST_LOCATION="$(uptime_s)"; return 0 ;; esac
+	command -v mosquito-lbs >/dev/null 2>&1 || { log '[WARN] mosquito-lbs is unavailable'; LAST_LOCATION="$(uptime_s)"; return 1; }
+	# The free single-cell LBS service rejects lookups that follow each other within about a minute.
+	if [ "$LAST_FIX" -gt 0 ] && [ $(($(uptime_s) - LAST_FIX)) -lt "$LOCATION_MIN_SEC" ]; then
+		log "[INFO] location refresh skipped: last fix is younger than ${LOCATION_MIN_SEC}s"
+		LAST_LOCATION="$(uptime_s)"
+		return 0
+	fi
+	drop_link
+	rm -f "$STATE_DIR/lbs-result.json" "$STATE_DIR/lbs-transcript.log" "$STATE_DIR/lbs-cells.json" \
+		"$STATE_DIR/gnss-result.json" "$STATE_DIR/gnss-transcript.log" "$STATE_DIR/gnss-cells.json"
+	GOT=0
+	if [ "$LOCATION_MODE" != lbs ]; then
+		AGNSS_FLAG=''
+		[ "$AGNSS" = 1 ] || AGNSS_FLAG='--no-agnss'
+		if mosquito-lbs --gnss "$GNSS_TIMEOUT" $AGNSS_FLAG --transcript "$STATE_DIR/gnss-transcript.log" \
+			--output "$STATE_DIR/gnss-result.json" --cells "$STATE_DIR/gnss-cells.json" \
+			> "$STATE_DIR/gnss.stdout" 2> "$STATE_DIR/gnss.stderr"; then
+			if store_location "$STATE_DIR/gnss-result.json" "$STATE_DIR/gnss-cells.json" GNSS; then
+				GOT=1
+				log "[PASS] GNSS fix obtained $(sed -n 's/^GNSS_RESULT=SUCCESS //p' "$STATE_DIR/gnss.stdout" | sed 's/ PRIVATE_OUTPUT=.*//')"
+			else
+				log '[WARN] GNSS result file is not parseable'
+			fi
+		else
+			log "[WARN] GNSS no fix: $(sed -n '$p' "$STATE_DIR/gnss.stderr" 2>/dev/null)"
+		fi
+	fi
+	if [ "$GOT" = 0 ] && [ "$LOCATION_MODE" != gnss ]; then
+		LAST_LBS_QUERY="$(uptime_s)"
+		if mosquito-lbs --locate --transcript "$STATE_DIR/lbs-transcript.log" --output "$STATE_DIR/lbs-result.json" \
+			--cells "$STATE_DIR/lbs-cells.json" > "$STATE_DIR/lbs.stdout" 2> "$STATE_DIR/lbs.stderr"; then
+			if store_location "$STATE_DIR/lbs-result.json" "$STATE_DIR/lbs-cells.json" LBS; then
+				GOT=1
+				log "[PASS] LBS fix obtained $(sed -n 's/^CELLS_SERVING=/cells serving=/p' "$STATE_DIR/lbs.stdout")"
+			else
+				log '[WARN] LBS result file is not parseable'
+			fi
+		else
+			log "[WARN] mosquito-lbs failed rc=$? $(sed -n '$p' "$STATE_DIR/lbs.stderr" 2>/dev/null)"
+		fi
+	fi
+	LAST_LOCATION="$(uptime_s)"
+	ensure_link && [ "$LOCATION_DIRTY" = 1 ] && post_location
+	return 0
+}
+
+ack_command()
+{
+	if [ -n "$3" ]; then ACK_CAPTURE="\"$3\""; else ACK_CAPTURE=null; fi
+	if [ -n "$4" ]; then ACK_ERROR="\"$(json_safe "$4")\""; else ACK_ERROR=null; fi
+	printf '{"status":"%s","captureId":%s,"error":%s}\n' "$2" "$ACK_CAPTURE" "$ACK_ERROR" > "$STATE_DIR/ack.json"
+	CODE="$(api_call POST "/api/device/commands/$1/ack" "$STATE_DIR/ack.json" 30 "$STATE_DIR/ack.response")"
+	[ "$CODE" = 200 ] && log "[PASS] command $1 acknowledged as $2" || log "[WARN] ack failed http=$CODE"
+}
+
+execute_capture()
+{
+	CMD_ID="$1"
+	FOCUS="$2"
+	case "$FOCUS" in ''|null) FOCUS="$DEFAULT_FOCUS" ;; esac
+	case "$FOCUS" in auto|[0-9]*) ;; *) FOCUS="$DEFAULT_FOCUS" ;; esac
+	CAPTURE_ID="$(cat /proc/sys/kernel/random/uuid 2>/dev/null)"
+	log "[INFO] command $CMD_ID: capture focus=$FOCUS capture_id=$CAPTURE_ID"
+	mosquito-capture --id "$CAPTURE_ID" --focus "$FOCUS" > "$STATE_DIR/capture.log" 2>&1
+	RC=$?
+	PHOTO="$(sed -n 's/^PHOTO=//p' "$STATE_DIR/capture.log" | sed -n '1p')"
+	METADATA="$(sed -n 's/^METADATA=//p' "$STATE_DIR/capture.log" | sed -n '1p')"
+	if { [ "$RC" -ne 0 ] && [ "$RC" -ne 10 ]; } || [ -z "$PHOTO" ] || [ -z "$METADATA" ]; then
+		log "[FAIL] capture failed rc=$RC"
+		ack_command "$CMD_ID" Failed "" "capture_exit_$RC"
+		return 1
+	fi
+	log "[PASS] capture rc=$RC photo=$PHOTO"
+	ensure_link || { ack_command "$CMD_ID" Failed "" "ppp_unavailable"; return 1; }
+	if mosquito-upload-4g --id "$CAPTURE_ID" --photo "$PHOTO" --metadata "$METADATA" \
+		--command-id "$CMD_ID" --trigger REMOTE_COMMAND --location-json "$LOCATION_FILE" \
+		> "$STATE_DIR/upload.log" 2>&1; then
+		log "[PASS] upload $(sed -n 's/^CLOUD_CAPTURE_STATUS=//p' "$STATE_DIR/upload.log")"
+		ack_command "$CMD_ID" Completed "$CAPTURE_ID" ""
+		heartbeat
+		[ "$LOCATION_AFTER_CAPTURE" = 1 ] && refresh_location
+		return 0
+	fi
+	log "[FAIL] upload failed: $(sed -n '$p' "$STATE_DIR/upload.log" 2>/dev/null)"
+	ack_command "$CMD_ID" Failed "$CAPTURE_ID" "upload_failed"
+	return 1
+}
+
+# Fast site learning: each round drops PPP, reboots the modem radio (AT+CFUN=1,1) so it re-searches and
+# camps on the strongest = nearest cell, then takes an LBS fix with the cell list and reports it. LBS
+# queries are spaced at least LOCATION_MIN_SEC apart because the free service rate-limits (CODE=7).
+execute_learn()
+{
+	CMD_ID="$1"
+	ROUNDS="$2"
+	case "$ROUNDS" in ''|null|*[!0-9]*) ROUNDS="$LEARN_ROUNDS" ;; esac
+	[ "$ROUNDS" -ge 1 ] 2>/dev/null || ROUNDS=1
+	[ "$ROUNDS" -le 12 ] 2>/dev/null || ROUNDS=12
+	log "[INFO] command $CMD_ID: learn rounds=$ROUNDS research=${LEARN_RESEARCH_SEC}s"
+	OK_ROUNDS=0
+	# Space from the last lookup of any outcome (a rate-limited one still counts against the window).
+	LAST_QUERY="${LAST_LBS_QUERY:-$LAST_FIX}"
+	[ "$LAST_FIX" -gt "$LAST_QUERY" ] 2>/dev/null && LAST_QUERY="$LAST_FIX"
+	I=1
+	while [ "$I" -le "$ROUNDS" ]; do
+		drop_link
+		mosquito-lbs --at 'AT+CFUN=1,1' --transcript "$STATE_DIR/learn-cfun.log" > /dev/null 2>&1
+		log "[INFO] learn round $I/$ROUNDS: modem re-search requested"
+		sleep "$LEARN_RESEARCH_SEC"
+		# Lookups must be >= LEARN_QUERY_GAP_SEC apart (the re-search wait above already counts).
+		if [ "$LAST_QUERY" -gt 0 ]; then
+			GAP=$(($(uptime_s) - LAST_QUERY))
+			[ "$GAP" -lt "$LEARN_QUERY_GAP_SEC" ] && { log "[INFO] learn round $I: waiting $((LEARN_QUERY_GAP_SEC - GAP))s for the lookup window"; sleep $((LEARN_QUERY_GAP_SEC - GAP)); }
+		fi
+		# A lookup that still fails with CODE=7 (busy or rate-limited) is retried once more after a
+		# full window, without another re-search (the modem stays camped on the cell it chose).
+		ATTEMPT=0
+		ROUND_OK=0
+		while [ "$ATTEMPT" -le "$LEARN_RETRIES" ]; do
+			if [ "$ATTEMPT" -gt 0 ]; then
+				log "[INFO] learn round $I: retry $ATTEMPT after $((LEARN_QUERY_GAP_SEC + 10))s (LBS busy or rate-limited)"
+				sleep $((LEARN_QUERY_GAP_SEC + 10))
+			fi
+			rm -f "$STATE_DIR/lbs-result.json" "$STATE_DIR/lbs-transcript.log" "$STATE_DIR/lbs-cells.json"
+			LAST_QUERY="$(uptime_s)"
+			if mosquito-lbs --locate --transcript "$STATE_DIR/lbs-transcript.log" --output "$STATE_DIR/lbs-result.json" \
+				--cells "$STATE_DIR/lbs-cells.json" > "$STATE_DIR/lbs.stdout" 2> "$STATE_DIR/lbs.stderr" &&
+			   store_location "$STATE_DIR/lbs-result.json" "$STATE_DIR/lbs-cells.json" LBS; then
+				ROUND_OK=1
+				break
+			fi
+			grep -q 'CODE=7' "$STATE_DIR/lbs.stderr" 2>/dev/null || break
+			ATTEMPT=$((ATTEMPT + 1))
+		done
+		if [ "$ROUND_OK" = 1 ]; then
+			OK_ROUNDS=$((OK_ROUNDS + 1))
+			log "[PASS] learn round $I: LBS fix $(sed -n 's/^CELLS_SERVING=/cells serving=/p' "$STATE_DIR/lbs.stdout")"
+		else
+			log "[WARN] learn round $I: $(sed -n '$p' "$STATE_DIR/lbs.stderr" 2>/dev/null)"
+		fi
+		LAST_LOCATION="$(uptime_s)"
+		if ensure_link; then
+			[ "$LOCATION_DIRTY" = 1 ] && post_location
+			heartbeat
+		fi
+		I=$((I + 1))
+	done
+	ensure_link
+	if [ "$OK_ROUNDS" -gt 0 ]; then
+		log "[PASS] learn finished: $OK_ROUNDS/$ROUNDS rounds produced a fix"
+		ack_command "$CMD_ID" Completed "" ""
+	else
+		log "[FAIL] learn finished without any fix"
+		ack_command "$CMD_ID" Failed "" "learn_no_fix"
+	fi
+	return 0
+}
+
+# poll_once [WAIT_SECONDS]; sets COMMAND_SEEN=1 when a command was received this call.
+poll_once()
+{
+	WAIT="${1:-$POLL_WAIT}"
+	COMMAND_SEEN=0
+	CODE="$(api_call GET "/api/device/commands?deviceId=$DEVICE_ID&wait=$WAIT" "" $((WAIT + 25)) "$STATE_DIR/command.json")"
+	case "$CODE" in
+	200)
+		CMD_ID="$(jsonfilter -i "$STATE_DIR/command.json" -e '@.id' 2>/dev/null)"
+		CMD_TYPE="$(jsonfilter -i "$STATE_DIR/command.json" -e '@.type' 2>/dev/null)"
+		CMD_FOCUS="$(jsonfilter -i "$STATE_DIR/command.json" -e '@.focus' 2>/dev/null)"
+		case "$CMD_ID" in
+			[0-9a-fA-F]*-*-*-*-*) ;;
+			*) log "[WARN] command response without id"; return 1 ;;
+		esac
+		COMMAND_SEEN=1
+		if [ "$CMD_TYPE" = Capture ]; then
+			execute_capture "$CMD_ID" "$CMD_FOCUS"
+		elif [ "$CMD_TYPE" = Learn ]; then
+			execute_learn "$CMD_ID" "$(jsonfilter -i "$STATE_DIR/command.json" -e '@.rounds' 2>/dev/null)"
+		else
+			log "[WARN] unsupported command type $CMD_TYPE"
+			ack_command "$CMD_ID" Failed "" "unsupported_type"
+		fi
+		;;
+	204) ;;
+	000) log "[WARN] command poll: no HTTP response (link?)"; return 1 ;;
+	*) log "[WARN] command poll http=$CODE"; return 1 ;;
+	esac
+	return 0
+}
+
+# Puts the modem into UART light-sleep (CSCLK=2: auto-sleep after ~5 s idle, any UART byte wakes it).
+# Only meaningful while PPP is down and the agent owns the UART; 4g-start's first AT wakes it again.
+modem_light_sleep()
+{
+	[ "$MODEM_SLEEP" = 1 ] || return 0
+	command -v mosquito-lbs >/dev/null 2>&1 || return 0
+	link_up && return 0
+	mosquito-lbs --at "AT+CSCLK=2" --transcript "$STATE_DIR/modem-sleep.log" > /dev/null 2>&1 || true
+}
+
+cleanup()
+{
+	persist_log
+	rm -f "$LOCK_DIR/pid" 2>/dev/null
+	rmdir "$LOCK_DIR" 2>/dev/null
+}
+
+case "$MODE" in
+status)
+	echo "lock: $(cat "$LOCK_DIR/pid" 2>/dev/null || echo none)"
+	echo "ppp0: $(link_up && echo up || echo down)"
+	if [ -r "$LOG" ]; then
+		N="$(wc -l < "$LOG")"
+		[ "$N" -gt 20 ] && S=$((N - 19)) || S=1
+		sed -n "${S},\$p" "$LOG"
+	fi
+	exit 0
+	;;
+stop)
+	PID="$(cat "$LOCK_DIR/pid" 2>/dev/null)"
+	[ -n "$PID" ] && kill "$PID" 2>/dev/null && echo "stopped $PID" || echo 'not running'
+	exit 0
+	;;
+run|once) ;;
+*)
+	echo 'Usage: mosquito-remote-agent [run|once|status|stop]' >&2
+	exit 2
+	;;
+esac
+
+load_config || exit 2
+# /var is a symlink into tmpfs on this image, so /var/run does not exist after a cold boot until
+# 4g-start creates it; the lock lives there and must not fail silently before the first PPP start.
+mkdir -p "${LOCK_DIR%/*}" 2>/dev/null
+if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+	OLD="$(cat "$LOCK_DIR/pid" 2>/dev/null)"
+	if [ -n "$OLD" ] && kill -0 "$OLD" 2>/dev/null; then
+		echo "[FAIL] agent already running as PID $OLD" >&2
+		exit 1
+	fi
+	rm -f "$LOCK_DIR/pid"; rmdir "$LOCK_DIR" 2>/dev/null
+	mkdir "$LOCK_DIR" 2>/dev/null || { echo "[FAIL] cannot create lock $LOCK_DIR" >&2; exit 1; }
+fi
+echo $$ > "$LOCK_DIR/pid"
+trap cleanup 0
+trap 'exit 130' 2
+trap 'exit 143' 15
+
+[ -r "$PERSIST_DIR/last-location.json" ] && [ ! -r "$LOCATION_FILE" ] && cp "$PERSIST_DIR/last-location.json" "$LOCATION_FILE"
+log "[INFO] remote agent start mode=$MODE device=$DEVICE_ID api=$API poll=${POLL_WAIT}s heartbeat=${HEARTBEAT_SEC}s location=${LOCATION_SEC}s/${LOCATION_MODE}"
+
+if [ "$MODE" = once ]; then
+	ensure_link || exit 1
+	heartbeat
+	refresh_location
+	poll_once
+	persist_log
+	exit 0
+fi
+
+FAILURES=0
+COMMAND_SEEN=0
+[ "$POWER_PROFILE" = duty ] && log "[INFO] power profile: duty (idle sleep ${IDLE_SLEEP_SEC}s, modem_sleep=${MODEM_SLEEP})"
+while :; do
+	if ! ensure_link; then
+		FAILURES=$((FAILURES + 1))
+		persist_log
+		sleep 60
+		continue
+	fi
+	NOW="$(uptime_s)"
+	if [ $((NOW - LAST_HEARTBEAT)) -ge "$HEARTBEAT_SEC" ]; then
+		heartbeat
+	fi
+	if [ $((NOW - LAST_LOCATION)) -ge "$LOCATION_SEC" ]; then
+		refresh_location
+		continue
+	fi
+	[ "$LOCATION_DIRTY" = 1 ] && post_location
+
+	if [ "$POWER_PROFILE" = duty ]; then
+		# One quick check for a pending command, then power down the link and idle.
+		if poll_once 0; then
+			FAILURES=0
+		else
+			FAILURES=$((FAILURES + 1))
+			[ "$FAILURES" -ge 5 ] && { log '[WARN] repeated poll failures; restarting PPP'; drop_link; FAILURES=0; }
+		fi
+		# A command may be one of a series: stay online briefly so follow-up captures are prompt.
+		[ "$COMMAND_SEEN" = 1 ] && continue
+		persist_log
+		drop_link
+		modem_light_sleep
+		log "[INFO] idle sleep ${IDLE_SLEEP_SEC}s (duty)"
+		sleep "$IDLE_SLEEP_SEC"
+		continue
+	fi
+
+	# always-on: hold a long-poll so a remote command is picked up within about a second.
+	if poll_once "$POLL_WAIT"; then
+		FAILURES=0
+	else
+		FAILURES=$((FAILURES + 1))
+		[ "$FAILURES" -ge 5 ] && { log '[WARN] repeated poll failures; restarting PPP'; drop_link; FAILURES=0; }
+		sleep 5
+	fi
+	[ $((NOW % 600)) -lt "$POLL_WAIT" ] && persist_log
+done
