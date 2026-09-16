@@ -67,7 +67,34 @@
 }
 ```
 
-`lastLocation` 为最后一次有效 GNSS 样本，字段同上；`latestCaptureId` 是最新可查看采集记录。即使设备暂无采集或无 GNSS，也必须出现在登记目录中。
+`lastLocation` 为最后一次有效定位样本，字段同上，另含 `source`（`LBS` / `GNSS`）和 `accuracyMeters`；`latestCaptureId` 是最新可查看采集记录。即使设备暂无采集或无定位，也必须出现在登记目录中。
+
+2026-09-10 起服务端还返回心跳字段（旧服务端可省略，客户端全部按可选处理）：`online`（180 秒心跳窗口内）、`lastSeenAtUtc`、`latestCaptureAtUtc`、`lastEnvironment`、`lastPower`（结构同采集记录的 environment / power）、`imageVersion`。
+
+## 远程指令（2026-09-10）
+
+- `POST /api/v2/devices/{deviceId}/commands`，请求 `{"type":"capture","focus":500}`（focus 可省略或 1..1023），设备必须已通过心跳登记，否则 404。响应 201：
+
+```json
+{
+  "id": "e978e209-a864-4b8d-987d-3748ae52d7ab",
+  "deviceId": "MQ-SH-001",
+  "type": "Capture",
+  "status": "Pending",
+  "createdAtUtc": "2026-09-10T14:14:02Z",
+  "expiresAtUtc": "2026-09-10T14:24:02Z",
+  "requestedBy": "demo",
+  "focus": 500,
+  "dispatchedAtUtc": null,
+  "completedAtUtc": null,
+  "captureId": null,
+  "error": null
+}
+```
+
+- `GET /api/v2/commands/{id}` 返回同一结构；`status` 为 `Pending`（板子尚未领取）、`Dispatched`（板子已领取，正在拍照 / 上传）、`Completed`（`captureId` 指向上传完成的采集记录）、`Failed`（`error` 为板端错误码，如 `upload_failed`）、`Expired`（10 分钟内未被领取）。
+- `GET /api/v2/devices/{deviceId}/commands` 按时间倒序列出该设备指令；`GET /api/v2/devices/{deviceId}/locations` 列出位置历史。
+- 板端通过 `GET /api/device/commands?deviceId=&wait=25` 长轮询领取，完成上传后由服务端把采集记录与指令关联并关闭指令；板端另发 ack 作为冗余确认。
 
 ## GET /api/v2/report-checks
 

@@ -16,6 +16,31 @@
 开始更新前运行 `git status`，处理好本地修改后再运行 `git pull --ff-only`。
 2026-09-07 迁移时，环境配置和测试修复尚未提交或推送；后续同步基线见下节。
 
+## 2026-09-14 一键安装包（含 ADB）
+
+- 命令：`.\scripts\Build-Installer.ps1 -Version 1.0.0`（可选 `-ApiBaseUrl`、`-DeviceId` 覆盖部署配置；`-SkipPublish` 复用已有发布产物）。步骤：`dev.ps1 Publish`（自包含 win-x64，约 188 MB）→ 暂存到 `installer\stage\`（app、platform-tools 子集、config）→ 用 Inno Setup 6 编译 `installer\MosquitoCapture.iss`。
+- 依赖：Inno Setup 6（`winget install --id JRSoftware.InnoSetup -e`，装在用户目录）；中文语言文件 `installer\ChineseSimplified.isl` 随仓库提供；ADB 来源默认 `C:\embedded\android-platform-tools`（可用 `-AdbSource` 指定），只打包 adb.exe 与其 DLL、NOTICE.txt、source.properties。
+- 配置：安装包内 `appsettings.json` 的 `AdbPath` 为相对路径 `platform-tools\adb.exe`，`AppSettings.Load` 按配置文件所在目录解析（绝对路径不变）；`appsettings.Local.json` 用本机演示覆盖（设备编号与公网 API 地址，无密钥），安装时已存在则不覆盖。
+- 产物与验收：`artifacts\installer\MosquitoCapture-Setup-1.0.0.exe`（56.3 MB，SHA-256 8d6da42bbbd901029095c65e5988c9b3070bcd6241c5b3207dc7fadbbb9c881f）。本机 `/VERYSILENT /DIR=...` 安装退出码 0，自带 `adb version` 正常，客户端启动 10 s 存活，`unins000.exe /VERYSILENT` 卸载后无残留。干净电脑验收待做。
+- 注意：安装包体积由自包含运行时决定；若要更小可改为依赖 .NET 桌面运行时并在安装器内引导安装，但会失去“无需任何预装”的特性。
+
+## 2026-09-10 真实地图与瓦片底图
+
+- 边界数据：`src\Mosquito.Client.Core\Assets\shanghai-districts.geojson`（阿里云 DataV.GeoAtlas 310000_full，GCJ02，16 区 MultiPolygon，SHA-256 见同目录 README）作为嵌入资源，由 `Mosquito.Client.Core.Geo.DistrictAtlas` 加载；`WebMercator`、`ChinaCoordinates`（WGS84↔GCJ02）、`MapSettings` 同在 `Geo` 命名空间。许可待项目负责人确认，替代来源见 README。
+- 地图控件：`src\Mosquito.Client\ShanghaiMap.cs`（总览矢量 + 区级瓦片），瓦片提供者与缓存在 `src\Mosquito.Client\Map\TileCache.cs`。
+- `appsettings.json` 新增：`MapTileProvider`（`amap` 默认 / `osm` / `none` / 其他值配合 `MapTileUrlTemplate` 视为自定义）、`MapTileUrlTemplate`（支持 `{z}{x}{y}{s}`）、`MapTileCoordinateSystem`（`GCJ02` / `WGS84`）、`MapTileCacheDirectory`（空 = `%LOCALAPPDATA%\MosquitoCapture\tiles`）、`MapMinZoom`/`MapMaxZoom`（默认 10/18）。
+- 高德栅格瓦片无需密钥但是非官方接口，仅用于演示；正式交付建议改用天地图（申请 tk 后以自定义模板接入，WGS84）或客户指定的地图服务。OSM 瓦片需署名且访问速度不稳定。
+- 自动化：CoreTests 新增 `MapTests`（16 区顺序、面积、归区、投影往返、坐标转换、配置归一化）；UiTests 用 `MapTileProvider="none"` 不联网，新增总览比例/朝向、点击进区、滚轮与按钮缩放上下限、返回全图、`TileCacheTests`（假 HTTP 处理器）。真实底图截图：`--map-preview`（见 CLIENT_REQUIREMENTS.md 验证与入口）。
+- 开发期间若 Release 版客户端正在运行，用 `-c Debug` 构建与测试，避免锁定 `bin\Release`。
+
+## 2026-09-10 远程模式联调（客户端 → frp → 本机服务端 → 板子 4G）
+
+- 演示服务端运行在本机（`C:\project\mosquito\mosquito-cloud-service`，`scripts\Start-DemoServer.ps1` 启动 API 与 frpc），公网入口为云主机 frp 转发的 `http://139.224.11.244:8086`。本机 `appsettings.Local.json`（Git 忽略）设置 `DeviceId=MQ-SH-001`、`ApiBaseUrl=http://139.224.11.244:8086`，客户端与板子走同一公网地址。
+- 新增远程拍照按钮、指令状态、设备在线 / 心跳读数与 20 秒位置静默刷新，详见 CLIENT_REQUIREMENTS.md “远程拍照与位置刷新”。
+- `dev.ps1 UiTest` 修正：顶部 SCDC 徽标是 `Image` 控件，单张照片断言改为排除 `BrandLogo`；新增模拟远程指令用例。
+- 真实联调入口：`dotnet run --project tests\Mosquito.Client.UiTests -c Release -- --real-remote src\Mosquito.Client\appsettings.json artifacts\real-remote-<时间戳>`，使用环境变量 `MOSQUITO_DEMO_USER` / `MOSQUITO_DEMO_PASSWORD`（缺省为服务端演示账号）登录真实云端，对配置的设备执行一次远程拍照并保存截图与 `REAL_REMOTE_RESULT.json`（不含坐标）。需要板子已运行 `mosquito-remote-agent run` 并有 4G 信号。
+- 2026-09-10 22:27 真实结果 PASS（`artifacts\real-remote-20260910-222750\`）：真实 WPF 经公网登录 `demo` → 远程模式 → `MQ-SH-001` 在线 → 点击“远程拍照”→ 板子经 4G 领取、拍照、上传（指令创建到完成 52 秒）→ 客户端显示 3264×2448 照片、温度 31.66 °C、湿度 44.20 %RH、电池 4.124 V（WARN）、LBS/GCJ02 位置、在线与最近心跳，地图出现设备标记。同日 Release 构建 0 错误，Core 测试与 UiTest 全部通过。板端证据在 WSL `mosquito-t113/build/test-runs/20260910-remote-agent-4g/`。
+
 ## 2026-09-09 客户端同步基线
 
 - 同步目标为本仓库的 `mosquito-windows-client` 分支，包含当前双模式工作区、统一登录、设备检测、历史与上报检查、v5.6.4 直连接口适配、开发脚本、需求及接口文档。
@@ -144,7 +169,7 @@ API 是开发实例，InMemory 数据会随服务退出丢失；健康检查通�
 
 ## 2026-09-07 统一登录、紧凑顶部与设备检测
 
-- 窗口与页头名称改为“智能诱蚊诱卵采集平台”。原独立模式卡片行移除，登录后在顶部切换模式；最小窗口 1180×800，右侧信息与检测详情可滚动。
+- 窗口与页头名称统一为“上海市疾病预防控制中心 智能诱蚊诱卵器监测平台”。原独立模式卡片行移除，登录后在顶部切换模式；最小窗口 1180×800，右侧信息与检测详情可滚动。
 - 未登录界面锁定，启动不访问板子或加载业务记录。`admin / 000` 为本阶段工程师入口，可以操作真实直连设备；其他账号使用 `api/auth/login`。真实云端账号尚未配置，不把模拟认证测试当成云端联调。
 - 云端会话记录过期时间，401 或到期锁定工作区。退出清空界面和口令控件、令牌，取消查询，丢弃旧响应，保留本机记录；临时网络失败保留未过期会话。
 - 直连“检测设备”与登录 / 模式切换 / USB 通知复用同一检测服务。Windows SetupAPI 枚举 USB 与 WinUSB，无需 PowerShell 或 ADB 来发现 USB；本机实测在普通受限测试进程中成功读取。

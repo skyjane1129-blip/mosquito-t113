@@ -3,15 +3,17 @@
         <Grid.RowDefinitions><RowDefinition Height="{Binding PreviewHeight, ElementName=Pane}"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
         <Border Background="#EDF2F5" CornerRadius="6">
             <Grid><TextBlock Text="采集影像" HorizontalAlignment="Center" VerticalAlignment="Center" Foreground="#7D8F9F"/>
-                <Image Source="{Binding Image}" Stretch="Uniform" Margin="8" MouseLeftButtonDown="OpenPhoto" ToolTip="点击放大原始影像"/>
+                <Image Source="{Binding Image}" Stretch="Uniform" Margin="8" MouseLeftButtonDown="OpenPhoto" ToolTip="点击放大当前影像"/>
             </Grid>
         </Border>
         <StackPanel Grid.Row="1" Margin="0,10,0,12">
             <TextBlock Text="{Binding Message}" TextWrapping="Wrap" Foreground="{StaticResource MutedBrush}" FontSize="12" Margin="0,0,0,8"/>
-            <StackPanel Orientation="Horizontal">
-                <Button Content="放大 / 原图" Click="OpenPhoto" IsEnabled="{Binding HasImage}" Style="{StaticResource SecondaryButton}" Padding="12,7" Margin="0,0,8,0"/>
-                <Button Content="保存照片" Click="SavePhoto" IsEnabled="{Binding HasImage}" Style="{StaticResource SecondaryButton}" Padding="12,7"/>
-            </StackPanel>
+            <WrapPanel Orientation="Horizontal">
+                <Button Content="放大 / 原图" Click="OpenPhoto" IsEnabled="{Binding HasImage}" Style="{StaticResource SecondaryButton}" Padding="12,7" Margin="0,0,8,6"/>
+                <Button Content="保存照片" Click="SavePhoto" IsEnabled="{Binding HasImage}" Style="{StaticResource SecondaryButton}" Padding="12,7" Margin="0,0,8,6"/>
+                <Button Content="{Binding AnalyzeButtonText}" Click="Analyze" IsEnabled="{Binding CanAnalyze}" Style="{StaticResource SecondaryButton}" Padding="12,7" Margin="0,0,8,6" ToolTip="把这张照片交给服务端的蚊卵检测模型，返回标出蚊卵和蚊子的标注图（需云端登录，约 10 到 60 秒）"/>
+                <Button Content="{Binding ToggleText}" Click="ToggleAnnotated" IsEnabled="{Binding HasAnalysis}" Style="{StaticResource SecondaryButton}" Padding="12,7" Margin="0,0,8,6"/>
+            </WrapPanel>
         </StackPanel>
         <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto"><TextBlock Text="{Binding Text}" TextWrapping="Wrap" LineHeight="24" Foreground="#354A60" FontSize="13"/></ScrollViewer>
     </Grid>

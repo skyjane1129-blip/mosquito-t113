@@ -8,7 +8,7 @@ public sealed class PhotoWindow : Window
 {
     public PhotoWindow(System.Windows.Media.Imaging.BitmapSource source)
     {
-        Title = "采集影像 · 原图查看"; Width = 1100; Height = 760; MinWidth = 600; MinHeight = 400;
+        Title = "原图查看"; Width = 1100; Height = 760; MinWidth = 600; MinHeight = 400;
         Background = (Brush)Application.Current.FindResource("PageBrush");
         var root = new DockPanel { Margin = new Thickness(16) };
         var toolbar = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 12) };

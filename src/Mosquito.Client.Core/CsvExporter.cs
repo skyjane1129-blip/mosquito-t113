@@ -13,12 +13,13 @@ public static class CsvExporter
         await using var stream = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.None);
         await using var writer = new StreamWriter(stream, new UTF8Encoding(encoderShouldEmitUTF8Identifier: true));
         await writer.WriteLineAsync(
-            "采集编号,设备编号,ADB序列号,记录状态,采集时间(北京时间),时间来源,服务端接收时间(北京时间),触发来源,上传通道,温度°C,湿度%RH,电池电压V,充电状态,失败阶段,故障详情,上传状态,纬度,经度,GNSS采样时间(北京时间),坐标系");
+            "照片名称,采集编号,设备编号,ADB序列号,记录状态,采集时间(北京时间),时间来源,服务端接收时间(北京时间),触发来源,上传通道,温度°C,湿度%RH,电池电压V,充电状态,失败阶段,故障详情,上传状态,纬度,经度,GNSS采样时间(北京时间),坐标系");
         foreach (var capture in captures)
         {
             cancellationToken.ThrowIfCancellationRequested();
             var row = new[]
             {
+                capture.PhotoName,
                 capture.Id.ToString("D"),
                 capture.DeviceId ?? "待确认",
                 capture.DeviceSerial,

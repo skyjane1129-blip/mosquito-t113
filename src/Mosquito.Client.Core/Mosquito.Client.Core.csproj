@@ -8,4 +8,8 @@
   <ItemGroup>
     <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.30" />
   </ItemGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="Assets\shanghai-districts.geojson" LogicalName="Mosquito.Client.Core.Assets.shanghai-districts.geojson" />
+    <None Include="Assets\shanghai-districts.README.md" />
+  </ItemGroup>
 </Project>

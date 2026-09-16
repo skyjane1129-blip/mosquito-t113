@@ -34,6 +34,8 @@ internal static class Program
             catch (Exception ex) { Console.Error.WriteLine(ex); return 1; }
         }
         var runRealDirect = args.Length == 3 && args[0] == "--real-direct";
+        var runRealRemote = args.Length == 3 && args[0] == "--real-remote";
+        var runMapPreview = args.Length == 2 && args[0] == "--map-preview";
         var app = new App { ShutdownMode = ShutdownMode.OnExplicitShutdown }; app.InitializeComponent();
         var result = 0;
         app.Dispatcher.BeginInvoke(async () =>
@@ -42,6 +44,10 @@ internal static class Program
             {
                 if (runRealDirect)
                     await RunRealDirectAsync(Path.GetFullPath(args[1]), Path.GetFullPath(args[2]));
+                else if (runRealRemote)
+                    await RunRealRemoteAsync(Path.GetFullPath(args[1]), Path.GetFullPath(args[2]));
+                else if (runMapPreview)
+                    await RunMapPreviewAsync(Path.GetFullPath(args[1]));
                 else
                     await RunAsync(args.Length == 0 ? Path.GetFullPath("artifacts/ui-check") : Path.GetFullPath(args[0]));
             }
@@ -356,6 +362,159 @@ internal static class Program
         window.Close();
     }
 
+    // Real end-to-end remote check: the WPF window logs in to the real cloud, issues one remote capture
+    // command to the configured device and waits for the board to pick it up over 4G, capture and upload.
+    private static async Task RunRealRemoteAsync(string settingsPath, string output)
+    {
+        if (Directory.Exists(output) && Directory.EnumerateFileSystemEntries(output).Any())
+            throw new InvalidOperationException("real-remote output directory must be new and empty");
+        Directory.CreateDirectory(output);
+        var settings = AppSettings.Load(settingsPath);
+        settings.LocalDataRoot = Path.Combine(output, "data");
+        var deviceId = settings.DeviceId ?? throw new InvalidOperationException("appsettings(.Local).json must configure DeviceId");
+        var user = Environment.GetEnvironmentVariable("MOSQUITO_DEMO_USER") ?? "demo";
+        var pass = Environment.GetEnvironmentVariable("MOSQUITO_DEMO_PASSWORD") ?? "change-me";
+        var cloud = new CloudApiClient(settings);
+        var outbox = new OutboxRepository(settings.LocalDataRoot); await outbox.InitializeAsync(default);
+        var adb = new NoHardware();
+        var vm = new MainViewModel(settings, new(settings, adb, new(), cloud, outbox), cloud, outbox, new FixtureDetector());
+        var window = new MainWindow(vm, false) { Width = 1500, Height = 960, Left = -20000, Top = -20000, ShowInTaskbar = false, ShowActivated = false,
+            WindowStartupLocation = WindowStartupLocation.Manual, Title = "Mosquito 远程模式实板联调" };
+        window.Show();
+        var started = DateTimeOffset.UtcNow;
+        var password = (System.Windows.Controls.PasswordBox)window.FindName("PasswordInput");
+        vm.Username = user; password.Password = pass;
+        ClickBoundButton((System.Windows.Controls.Button)window.FindName("LoginButton"), vm.LoginCommand);
+        await UntilReal(() => vm.IsLoggedIn && !vm.Busy, TimeSpan.FromSeconds(60), "real cloud login through the public API");
+        Assert(vm.Session.Kind == SessionKind.Cloud && cloud.IsAuthenticated, "real remote test holds a cloud session");
+        vm.RemoteModeCommand.Execute(null);
+        await UntilReal(() => vm.IsRemote && !vm.Busy && vm.RegistryReady, TimeSpan.FromSeconds(60), "remote registry load");
+        var device = vm.Devices.FirstOrDefault(x => x.DeviceId == deviceId) ?? throw new InvalidOperationException($"device {deviceId} is not registered on the server");
+        vm.SelectedDevice = device;
+        await UntilReal(() => vm.RemotePhoto.Record is not null || device.LatestCaptureId is null, TimeSpan.FromSeconds(60), "latest capture preview");
+        Assert(device.Online == true, $"board {deviceId} must be online (heartbeat within the server window) before a remote capture");
+        var previousCaptureId = vm.RemotePhoto.Record?.Id;
+        await SaveWindow(window, Path.Combine(output, "01-real-remote-before.png"));
+
+        var button = (System.Windows.Controls.Button)window.FindName("RemoteCaptureButton");
+        vm.ManualFocus = 500;
+        ClickBoundButton(button, vm.RemoteCaptureCommand);
+        await UntilReal(() => vm.Busy, TimeSpan.FromSeconds(5), "remote capture command to start");
+        var statuses = new List<string>();
+        var watch = Stopwatch.StartNew();
+        while (vm.Busy && watch.Elapsed < TimeSpan.FromMinutes(6))
+        {
+            if (statuses.Count == 0 || statuses[^1] != vm.RemoteCommandStatus) statuses.Add(vm.RemoteCommandStatus);
+            await Task.Delay(200);
+        }
+        Assert(!vm.Busy, "remote capture finished within 6 minutes");
+        var command = vm.RemoteCommand ?? throw new InvalidOperationException("no command was recorded by the view model");
+        Assert(command.Status == "Completed" && command.CaptureId is not null, $"board completed the command (status={command.Status}, error={command.Error})");
+        await UntilReal(() => vm.RemotePhoto.HasImage, TimeSpan.FromSeconds(60), "remote photo download");
+        var record = vm.RemotePhoto.Record ?? throw new InvalidOperationException("no capture record shown after completion");
+        Assert(record.Id == command.CaptureId && record.Id != previousCaptureId, "shown capture is the one produced by this command");
+        Assert(record.TriggerSource?.ToUpperInvariant() == "REMOTE_COMMAND" && record.UploadRoute == "BOARD_4G" && record.DeviceId == deviceId,
+            "capture was uploaded by the board over 4G as a remote command");
+        Assert(vm.RemotePhoto.Image is { PixelWidth: 3264, PixelHeight: 2448 }, "real 3264x2448 photo downloaded from the server");
+        Assert(record.Environment?.TemperatureCentiC is not null && record.Power?.BatteryMv is not null, "temperature and battery voltage arrived with the photo");
+        var refreshed = vm.SelectedDevice ?? throw new InvalidOperationException("device selection was lost after the command");
+        Assert(refreshed.LatestCaptureId == record.Id && refreshed.Online == true, "device card refreshed with the new capture and online state");
+        var location = refreshed.LastLocation;
+        await SaveWindow(window, Path.Combine(output, "02-real-remote-complete.png"));
+        vm.RemoteView = 1;
+        await SaveWindow(window, Path.Combine(output, "03-real-remote-image.png"));
+
+        // Egg detection on the photo just taken: the server runs the model, the pane switches to the annotated picture.
+        var originalImage = vm.RemotePhoto.Image;
+        Assert(vm.RemotePhoto.CanAnalyze, "analysis button is enabled for a cloud-backed photo");
+        var analysisWatch = Stopwatch.StartNew();
+        await vm.RemotePhoto.AnalyzeAsync();
+        var analysis = vm.RemotePhoto.Analysis ?? throw new InvalidOperationException("no analysis result recorded by the view model");
+        Assert(analysis.IsCompleted, $"server analysis completed (status={analysis.Status}, error={analysis.Error})");
+        Assert(vm.RemotePhoto.HasAnalysis && vm.RemotePhoto.ShowAnnotated && !ReferenceEquals(vm.RemotePhoto.Image, originalImage),
+            "annotated picture downloaded and shown");
+        Assert(vm.RemotePhoto.Image is { PixelWidth: 3264, PixelHeight: 2448 }, "annotated picture keeps the original size");
+        Assert(vm.RemotePhoto.Message.Contains("识别完成") && vm.RemotePhoto.Text.Contains("蚊卵识别  蚊卵"), "pane text reports the counts");
+        await SaveWindow(window, Path.Combine(output, "04-real-remote-analysis.png"));
+        vm.RemotePhoto.ShowAnnotated = false;
+        Assert(ReferenceEquals(vm.RemotePhoto.Image, originalImage), "toggle returns to the original photo");
+        vm.RemotePhoto.ShowAnnotated = true;
+
+        var resultPath = Path.Combine(output, "REAL_REMOTE_RESULT.json");
+        await File.WriteAllTextAsync(resultPath, JsonSerializer.Serialize(new
+        {
+            result = "PASS",
+            testedAtUtc = DateTimeOffset.UtcNow,
+            apiBaseUrl = settings.ApiBaseUrl,
+            deviceId,
+            commandId = command.Id,
+            commandCreatedAtUtc = command.CreatedAtUtc,
+            commandDispatchedAtUtc = command.DispatchedAtUtc,
+            commandCompletedAtUtc = command.CompletedAtUtc,
+            roundTripSeconds = (int)((command.CompletedAtUtc ?? DateTimeOffset.UtcNow) - command.CreatedAtUtc).TotalSeconds,
+            statusTransitions = statuses,
+            captureId = record.Id,
+            record.Status, record.UploadRoute, record.TriggerSource, record.TimeSource, record.CapturedAtUtc, record.ReceivedAtUtc,
+            record.PhotoBytes, jpegWidth = vm.RemotePhoto.Image!.PixelWidth, jpegHeight = vm.RemotePhoto.Image.PixelHeight,
+            environment = record.Environment, power = record.Power,
+            // Coordinates are deliberately omitted; only their presence and provenance are recorded.
+            locationPresent = location is not null,
+            locationSource = location?.Source, locationCoordinateSystem = location?.CoordinateSystem, locationSampledAtUtc = location?.SampledAtUtc,
+            photoLocationPresent = record.Location is not null,
+            deviceOnline = refreshed.Online, deviceLastSeenAtUtc = refreshed.LastSeenAtUtc, deviceImageVersion = refreshed.ImageVersion,
+            analysis = new
+            {
+                analysis.Status, analysis.ModelVersion, analysis.Confidence, analysis.EggCount, analysis.MosquitoCount, analysis.Tiles,
+                serverDurationMs = analysis.DurationMs, clientRoundTripSeconds = (int)analysisWatch.Elapsed.TotalSeconds,
+                detections = analysis.Detections?.Length ?? 0
+            },
+            uiElapsedSeconds = (int)(DateTimeOffset.UtcNow - started).TotalSeconds
+        }, new JsonSerializerOptions { WriteIndented = true, Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping, Converters = { new JsonStringEnumConverter() } }));
+        Console.WriteLine(await File.ReadAllTextAsync(resultPath));
+        window.Close();
+    }
+
+    // Visual check with real base tiles (network): simulated devices, real AMap raster tiles. Not part of UiTest.
+    private static async Task RunMapPreviewAsync(string output)
+    {
+        Directory.CreateDirectory(output);
+        var data = Path.Combine(output, "fixture-data"); Directory.CreateDirectory(data);
+        var now = DateTimeOffset.UtcNow;
+        var handler = new FixtureHandler(now);
+        var settings = new AppSettings { ApiBaseUrl = "http://fixture.invalid", DeviceId = "MQ-SH-001", DeviceSerial = "TEST-ADB", LocalDataRoot = data, MapTileProvider = "amap" };
+        var cloud = new CloudApiClient(settings, handler);
+        var outbox = new OutboxRepository(data); await outbox.InitializeAsync(default);
+        var vm = new MainViewModel(settings, new(settings, new NoHardware(), new(), cloud, outbox), cloud, outbox, new FixtureDetector());
+        var window = new MainWindow(vm, false) { Width = 1500, Height = 960, Left = -20000, Top = -20000, ShowInTaskbar = false, ShowActivated = false, WindowStartupLocation = WindowStartupLocation.Manual, Title = "地图预览 · 模拟设备 + 真实底图" };
+        window.Show();
+        vm.Username = "test"; vm.Password = "test"; vm.LoginCommand.Execute(null);
+        await Until(() => vm.IsLoggedIn && !vm.Busy);
+        vm.RemoteModeCommand.Execute(null); await Until(() => vm.IsRemote && !vm.Busy);
+        var map = VisualChildren<ShanghaiMap>(window).Single(x => x.IsVisible);
+        await SaveWindow(window, Path.Combine(output, "01-overview.png"));
+        async Task Loaded(string name)
+        {
+            var started = Stopwatch.StartNew();
+            while (started.Elapsed < TimeSpan.FromSeconds(40))
+            {
+                var images = VisualChildren<System.Windows.Controls.Image>(map).ToArray();
+                if (images.Length > 0 && images.Count(x => x.Source is not null) >= Math.Min(images.Length, 12)) break;
+                await Task.Delay(200);
+            }
+            await SaveWindow(window, Path.Combine(output, name));
+            Console.WriteLine($"{name}: zoom {map.Zoom:F2}, tiles {map.VisibleTileCount}, loaded {VisualChildren<System.Windows.Controls.Image>(map).Count(x => x.Source is not null)}");
+        }
+        vm.District = "浦东新区"; await Loaded("02-pudong.png");
+        var canvas = VisualChildren<System.Windows.Controls.Canvas>(map).Single(x => AutomationProperties.GetAutomationId(x) == "ShanghaiMapCanvas");
+        for (var i = 0; i < 4; i++)
+            canvas.RaiseEvent(new System.Windows.Input.MouseWheelEventArgs(System.Windows.Input.Mouse.PrimaryDevice, 0, 120) { RoutedEvent = UIElement.MouseWheelEvent });
+        await Loaded("03-pudong-zoomed.png");
+        vm.District = "黄浦区"; await Loaded("04-huangpu.png");
+        vm.District = "崇明区"; await Loaded("05-chongming.png");
+        window.Close();
+        Console.WriteLine("map preview saved: " + output);
+    }
+
     private static string RequiredOutputMarker(string output, string name)
     {
         var prefix = name + "=";
@@ -398,11 +557,11 @@ internal static class Program
         var bytes = await File.ReadAllBytesAsync(photoPath);
         var now = DateTimeOffset.UtcNow;
         var handler = new FixtureHandler(now);
-        var settings = new AppSettings { ApiBaseUrl = "http://fixture.invalid", DeviceId = "MQ-SH-001", DeviceSerial = "TEST-ADB", LocalDataRoot = data };
+        var settings = new AppSettings { ApiBaseUrl = "http://fixture.invalid", DeviceId = "MQ-SH-001", DeviceSerial = "TEST-ADB", LocalDataRoot = data, MapTileProvider = "none" };
         var cloud = new CloudApiClient(settings, handler);
         var outbox = new OutboxRepository(data); await outbox.InitializeAsync(default);
         var adb = new NoHardware();
-        var vm = new MainViewModel(settings, new(settings, adb, new(), cloud, outbox), cloud, outbox, new FixtureDetector());
+        var vm = new MainViewModel(settings, new(settings, adb, new(), cloud, outbox), cloud, outbox, new FixtureDetector(), (_, _) => Task.FromResult(bytes));
         var window = new MainWindow(vm, false) { Width = 1500, Height = 960, Left = -20000, Top = -20000, ShowInTaskbar = false, ShowActivated = false, WindowStartupLocation = WindowStartupLocation.Manual, Title = "UI 验证 · 模拟数据" };
         var bindingErrors = new ErrorTrace(); PresentationTraceSources.DataBindingSource.Listeners.Add(bindingErrors);
         window.Show();
@@ -468,9 +627,41 @@ internal static class Program
         resultsScroll.ScrollToTop();
         window.Width = 1500; window.Height = 960;
         vm.RemoteModeCommand.Execute(null); await Until(() => vm.IsRemote && !vm.Busy);
-        Assert(!vm.CaptureCommand.CanExecute(null) && !vm.ReadDeviceCommand.CanExecute(null), "remote mode has no capture/read controls");
+        Assert(!vm.CaptureCommand.CanExecute(null) && !vm.ReadDeviceCommand.CanExecute(null), "remote mode has no direct capture/read controls");
+        Assert(!vm.RemoteCaptureCommand.CanExecute(null), "remote capture needs a selected device");
         vm.SelectedDevice = vm.Devices.First();
-        await vm.RemotePhoto.LoadAsync(handler.Records[0] with { LocalPhotoPath = photoPath });
+        await Until(() => vm.RemotePhoto.Record is not null);
+        Assert(vm.DeviceStatus.Contains("在线") && vm.HasDeviceHeartbeat && vm.DeviceHeartbeat.Contains("温度"),
+            "device card shows heartbeat online state and readings");
+        // Remote capture: POST command -> poll until Completed -> load the new capture and refresh the registry.
+        MainViewModel.CommandPollInterval = TimeSpan.FromMilliseconds(20);
+        var remoteCaptureButton = (System.Windows.Controls.Button)window.FindName("RemoteCaptureButton");
+        Assert(ReferenceEquals(remoteCaptureButton.Command, vm.RemoteCaptureCommand) && vm.RemoteCaptureCommand.CanExecute(null), "remote capture button bound and enabled");
+        var beforeRemote = vm.RemotePhoto.Record!.Id;
+        vm.ManualFocus = 480;
+        vm.RemoteCaptureCommand.Execute(null);
+        await Until(() => vm.Busy);
+        await Until(() => !vm.Busy);
+        Assert(handler.CommandRequests.Count == 1 && handler.CommandRequests[0] == ("MQ-SH-001", 480), "remote capture posts one command for the selected device with the chosen focus");
+        Assert(handler.CommandPolls >= 2 && vm.RemoteCommand is { Status: "Completed" }, "client polls the command until it reports Completed");
+        Assert(vm.RemotePhoto.Record?.Id == handler.RemoteCapture.Id && vm.RemotePhoto.Record.Id != beforeRemote && vm.RemotePhoto.HasImage,
+            "completed remote capture replaces the shown photo with the new record");
+        Assert(vm.RemotePhoto.Text.Contains("远程指令采集") && vm.RemoteCommandStatus.Contains("远程拍照完成") && vm.RemoteHistory.HasNewRecords,
+            "remote trigger source, command status and history notification are shown");
+        Assert(vm.SelectedDevice?.LatestCaptureId == handler.RemoteCapture.Id && vm.SelectedDevice.LastLocation?.Latitude == handler.RemoteCapture.Location!.Latitude &&
+               vm.DeviceLocation.Contains("基站定位"), "registry refresh after the command keeps the selection and shows the new LBS position");
+        // Quiet background refresh must not clear the loaded photo.
+        var shownImage = vm.RemotePhoto.Image;
+        handler.MoveDevice = true;
+        await vm.RefreshDevicesQuietlyAsync();
+        Assert(ReferenceEquals(vm.RemotePhoto.Image, shownImage) && vm.SelectedDevice?.LastLocation?.Longitude == 121.60 && vm.RegistryMessage.Contains("在线 1 台"),
+            "background registry refresh updates position and online count without reloading the photo");
+        handler.MoveDevice = false; await vm.RefreshDevicesQuietlyAsync();
+        // Failed command surfaces its error without touching the current photo.
+        handler.FailNextCommand = true;
+        vm.RemoteCaptureCommand.Execute(null); await Until(() => vm.Busy); await Until(() => !vm.Busy);
+        Assert(vm.RemoteCommand is { Status: "Failed" } && vm.RemoteCommandStatus.Contains("失败") && vm.RemoteCommandStatus.Contains("upload_failed") &&
+               vm.RemotePhoto.Record?.Id == handler.RemoteCapture.Id, "failed remote command reports the board error and keeps the last photo");
         await SaveWindow(window, Path.Combine(output, "remote-workspace.png"));
         AssertSinglePhoto(window, "remote map workspace");
         var map = VisualChildren<ShanghaiMap>(window).Single(x => x.IsVisible);
@@ -482,14 +673,23 @@ internal static class Program
             "宝山区", "嘉定区", "浦东新区", "金山区", "松江区", "青浦区", "奉贤区", "崇明区"
         };
         Assert(districtSelector.Items.Cast<string>().SequenceEqual(expectedDistricts),
-            "schematic map exposes Shanghai plus all 16 unique districts in stable order");
-        Assert(VisualChildren<System.Windows.Shapes.Path>(map).Count(x =>
-                   AutomationProperties.GetAutomationId(x).StartsWith("ShanghaiDistrict-", StringComparison.Ordinal)) == 16,
-            "full schematic map draws all 16 project-authored district shapes");
+            "map exposes Shanghai plus all 16 unique districts in stable order");
+        var districtPaths = VisualChildren<System.Windows.Shapes.Path>(map)
+            .Where(x => AutomationProperties.GetAutomationId(x).StartsWith("ShanghaiDistrict-", StringComparison.Ordinal))
+            .ToDictionary(x => AutomationProperties.GetAutomationId(x)["ShanghaiDistrict-".Length..], x => x.Data.Bounds);
+        Assert(districtPaths.Count == 16, "overview draws all 16 real district boundaries");
+        var largest = districtPaths.OrderByDescending(x => x.Value.Width * x.Value.Height).Take(2).Select(x => x.Key).Order().ToArray();
+        Assert(largest.SequenceEqual(new[] { "崇明区", "浦东新区" }.Order()) && districtPaths.MinBy(x => x.Value.Width * x.Value.Height).Key == "黄浦区",
+            "overview proportions follow the real boundaries: Chongming/Pudong largest, Huangpu smallest");
+        Assert(districtPaths["崇明区"].Top < districtPaths["金山区"].Top && districtPaths["浦东新区"].Right > districtPaths["青浦区"].Right,
+            "overview orientation: Chongming north of Jinshan, Pudong east of Qingpu");
+        Assert(!map.IsTileMode && map.Zoom > 8 && map.VisibleTileCount == 0, "overview is the static vector map without tiles");
+        Assert(expectedDistricts.Skip(1).All(name => VisualChildren<System.Windows.Controls.TextBlock>(map).Any(x => x.Text.StartsWith(name.Replace("区", "", StringComparison.Ordinal), StringComparison.Ordinal))),
+            "every district carries a label on the overview");
         var mapNote = VisualChildren<System.Windows.Controls.TextBlock>(map)
             .Single(x => AutomationProperties.GetAutomationId(x) == "ShanghaiMapNote");
-        Assert(mapNote.Text.Contains("项目自绘", StringComparison.Ordinal) && mapNote.Text.Contains("不代表精确边界", StringComparison.Ordinal),
-            "map identifies the project-authored schematic without third-party attribution");
+        Assert(mapNote.Text.Contains("真实边界", StringComparison.Ordinal) && mapNote.Text.Contains("DataV.GeoAtlas", StringComparison.Ordinal),
+            "map note states real boundaries and the boundary data attribution");
         var remoteDevice = vm.SelectedDevice;
         var remotePhoto = vm.RemotePhoto.Record;
         var remoteImage = vm.RemotePhoto.Image;
@@ -506,22 +706,45 @@ internal static class Program
         AssertSinglePhoto(window, "remote map restored at minimum window size");
         Assert(((FrameworkElement)window.FindName("RemotePreview")).IsVisible, "returning to map restores remote photo preview");
         window.Width = 1500; window.Height = 960;
-        vm.District = "浦东新区";
+        // Clicking a district on the overview drills into the zoomable district map.
+        VisualChildren<System.Windows.Shapes.Path>(map).Single(x => AutomationProperties.GetAutomationId(x) == "ShanghaiDistrict-浦东新区")
+            .RaiseEvent(new System.Windows.Input.MouseButtonEventArgs(System.Windows.Input.Mouse.PrimaryDevice, 0, System.Windows.Input.MouseButton.Left) { RoutedEvent = UIElement.MouseLeftButtonDownEvent });
+        window.UpdateLayout();
+        Assert(vm.District == "浦东新区" && map.IsTileMode && map.District == "浦东新区", "clicking a district on the overview selects it and enters the tile map");
         await SaveWindow(window, Path.Combine(output, "remote-district.png"));
         Assert(VisualChildren<System.Windows.Shapes.Path>(map).Count(x =>
                    AutomationProperties.GetAutomationId(x).StartsWith("ShanghaiDistrict-", StringComparison.Ordinal)) == 1,
-            "district selection draws only the Pudong schematic shape");
-        Assert(VisualChildren<System.Windows.Controls.Button>(map).Any(x =>
-                   AutomationProperties.GetAutomationId(x) == "ShanghaiDeviceMarker"),
-            "Pudong fixture coordinates remain visible as a device marker");
+            "district view outlines only the selected district");
+        Assert(VisualChildren<System.Windows.Controls.Button>(map).Count(x =>
+                   AutomationProperties.GetAutomationId(x) == "ShanghaiDeviceMarker") == 3,
+            "district view shows each Pudong fixture device as its own marker");
+        Assert(mapNote.Text.Contains("滚轮缩放", StringComparison.Ordinal) && map.VisibleTileCount == 0 && map.TileAttribution == "未加载底图",
+            "district note explains zooming and the none provider loads no tiles");
+        var mapCanvas = VisualChildren<System.Windows.Controls.Canvas>(map).Single(x => AutomationProperties.GetAutomationId(x) == "ShanghaiMapCanvas");
+        var fitZoom = map.Zoom;
+        Assert(fitZoom is >= 10 and <= 18, $"district entry fits the district within the zoom range (zoom {fitZoom:F2})");
+        void Wheel(int delta) => mapCanvas.RaiseEvent(new System.Windows.Input.MouseWheelEventArgs(System.Windows.Input.Mouse.PrimaryDevice, 0, delta) { RoutedEvent = UIElement.MouseWheelEvent });
+        Wheel(120);
+        Assert(Math.Abs(map.Zoom - (fitZoom + 0.5)) < 1e-9, "one wheel notch zooms in by half a level");
+        await SaveWindow(window, Path.Combine(output, "remote-district-zoomed.png"));
+        Wheel(-120);
+        Assert(Math.Abs(map.Zoom - fitZoom) < 1e-9, "wheel back restores the previous zoom");
+        for (var i = 0; i < 40; i++) Wheel(120);
+        Assert(Math.Abs(map.Zoom - 18) < 1e-9, "wheel zoom stops at the configured maximum");
+        for (var i = 0; i < 40; i++) Wheel(-120);
+        Assert(Math.Abs(map.Zoom - 10) < 1e-9, "wheel zoom stops at the configured minimum");
+        VisualChildren<System.Windows.Controls.Button>(map).Single(x => AutomationProperties.GetAutomationId(x) == "ShanghaiMapZoomIn")
+            .RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Button.ClickEvent));
+        Assert(Math.Abs(map.Zoom - 11) < 1e-9, "zoom-in button adds one level");
         var resetMap = VisualChildren<System.Windows.Controls.Button>(map)
             .Single(x => AutomationProperties.GetAutomationId(x) == "ShanghaiMapReset");
         resetMap.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Button.ClickEvent));
         window.UpdateLayout();
-        Assert(vm.District == "上海市" &&
+        Assert(vm.District == "上海市" && !map.IsTileMode &&
                VisualChildren<System.Windows.Shapes.Path>(map).Count(x =>
                    AutomationProperties.GetAutomationId(x).StartsWith("ShanghaiDistrict-", StringComparison.Ordinal)) == 16,
-            "return-to-Shanghai restores the full schematic map");
+            "return-to-Shanghai restores the full overview");
+        await TileCacheTests.RunAsync(Assert, Path.Combine(output, "tile-cache"));
         vm.Tab = 1; vm.RecordTab = 0;
         vm.RemoteHistory.Range = "近 7 天"; await vm.RemoteHistory.QueryAsync();
         Assert(vm.RemoteHistory.Rows.Count == 50 && vm.RemoteHistory.PageLabel.Contains("553"), "real WPF history binding shows 553-record query paginated at 50");
@@ -591,7 +814,7 @@ internal static class Program
         throw new TimeoutException("UI operation did not complete.");
     }
     private static void AssertSinglePhoto(Window window, string context) =>
-        Assert(VisualChildren<System.Windows.Controls.Image>(window).Count(x => x.IsVisible && x.Source is not null) == 1,
+        Assert(VisualChildren<System.Windows.Controls.Image>(window).Count(x => x.IsVisible && x.Source is not null && x.Name != "BrandLogo") == 1,
             context + " displays exactly one photo without duplicate preview");
     private static IEnumerable<T> VisualChildren<T>(DependencyObject root) where T : DependencyObject
     {
@@ -690,6 +913,13 @@ internal static class Program
         private readonly DateTimeOffset _now;
         public bool Fail { get; set; }
         public bool Repair { get; set; }
+        public bool MoveDevice { get; set; }
+        public bool FailNextCommand { get; set; }
+        public List<(string DeviceId, int? Focus)> CommandRequests { get; } = [];
+        public int CommandPolls { get; private set; }
+        private RemoteCommand? _command;
+        private bool _commandDone;
+        public CloudCaptureRecord RemoteCapture { get; }
         public CloudCaptureRecord[] Records { get; }
         public FixtureHandler(DateTimeOffset now)
         {
@@ -697,6 +927,19 @@ internal static class Program
             Records = Enumerable.Range(0, 553).Select(i => new CloudCaptureRecord(Guid.NewGuid(), "TEST-ADB", i % 7 == 0 ? "Partial" : "Complete", "BOARD_4G", now.AddMinutes(-i), true, 2458000, 1800,
                 new("PASS", "NONE", 2635 + i % 70, 6130 + i % 50, true, 2000), new("PASS", "NONE", 4124 - i % 30, "NOT_CHARGING", false, null, null, null, 2000), null)
                 { DeviceId = $"MQ-SH-{i % 3 + 1:000}", TriggerSource = "SCHEDULED", TimeSource = "BOARD", ReceivedAtUtc = now.AddMinutes(-i + 1), Location = new(31.211 + i % 3 * .01, 121.562 + i % 3 * .01, now.AddMinutes(-i), "浦东新区", "GCJ02") }).ToArray();
+            RemoteCapture = new CloudCaptureRecord(Guid.NewGuid(), "TEST-ADB", "Complete", "BOARD_4G", now.AddSeconds(30), true, 365448, 7056,
+                new("PASS", "NONE", 3221, 4325, true, 109142788), new("PASS", "NONE", 4144, "CHARGE_DONE", true, 4800, 0, "0x00", 109142898), null)
+                { DeviceId = "MQ-SH-001", TriggerSource = "REMOTE_COMMAND", TimeSource = "BOARD", ReceivedAtUtc = now.AddSeconds(66), Location = new(31.2305, 121.4737, now.AddSeconds(20), null, "GCJ02") { Source = "LBS" } };
+        }
+        private RemoteDevice Device(CloudCaptureRecord x)
+        {
+            var latest = _commandDone && x.DeviceId == "MQ-SH-001" ? RemoteCapture : x;
+            var location = MoveDevice && x.DeviceId == "MQ-SH-001" ? new GeoSample(31.2400, 121.60, _now.AddSeconds(90), null, "GCJ02") { Source = "LBS" } : latest.Location;
+            return new(x.DeviceId!, x.DeviceSerial, location, latest.Id)
+            {
+                Online = x.DeviceId == "MQ-SH-001", LastSeenAtUtc = _now.AddSeconds(-40), LatestCaptureAtUtc = latest.CapturedAtUtc,
+                LastEnvironment = latest.Environment, LastPower = latest.Power, ImageVersion = "dev-v5.6.4-client-direct"
+            };
         }
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken token)
         {
@@ -710,7 +953,26 @@ internal static class Program
                 var filtered = Records.Where(x => (!query.TryGetValue("deviceId", out var device) || x.DeviceId == device) && x.CapturedAtUtc >= DateTimeOffset.Parse(query["from"]) && x.CapturedAtUtc < DateTimeOffset.Parse(query["toExclusive"])).ToArray();
                 return Task.FromResult(Json(new CapturePage(filtered.Skip(offset).Take(50).ToArray(), offset + 50 < filtered.Length ? (offset + 50).ToString() : null, "fixture", true)));
             }
-            if (path == "/api/v2/devices") return Task.FromResult(Json(new DevicePage(Records.Take(3).Select(x => new RemoteDevice(x.DeviceId!, x.DeviceSerial, x.Location, x.Id)).ToArray(), null, "fixture", true)));
+            if (path == "/api/v2/devices") return Task.FromResult(Json(new DevicePage(Records.Take(3).Select(Device).ToArray(), null, "fixture", true)));
+            if (request.Method == HttpMethod.Post && path.StartsWith("/api/v2/devices/") && path.EndsWith("/commands"))
+            {
+                var body = JsonDocument.Parse(request.Content!.ReadAsStringAsync(token).GetAwaiter().GetResult()).RootElement;
+                var focus = body.TryGetProperty("focus", out var f) && f.ValueKind == JsonValueKind.Number ? f.GetInt32() : (int?)null;
+                CommandRequests.Add((Uri.UnescapeDataString(path.Split('/')[4]), focus));
+                CommandPolls = 0;
+                _command = new RemoteCommand(Guid.NewGuid(), "MQ-SH-001", "Capture", "Pending", _now, _now.AddMinutes(10)) { RequestedBy = "test", Focus = focus };
+                return Task.FromResult(Json(_command));
+            }
+            if (path.StartsWith("/api/v2/commands/") && _command is not null)
+            {
+                CommandPolls++;
+                _command = CommandPolls == 1 ? _command with { Status = "Dispatched", DispatchedAtUtc = _now.AddSeconds(5) }
+                    : FailNextCommand ? _command with { Status = "Failed", CompletedAtUtc = _now.AddSeconds(60), Error = "upload_failed" }
+                    : _command with { Status = "Completed", CompletedAtUtc = _now.AddSeconds(66), CaptureId = RemoteCapture.Id };
+                if (_command.Status == "Completed") _commandDone = true;
+                if (_command.Status == "Failed") FailNextCommand = false;
+                return Task.FromResult(Json(_command));
+            }
             if (path == "/api/v2/report-checks")
             {
                 var anchor = _now.AddMinutes(-120);
@@ -724,7 +986,8 @@ internal static class Program
                 }.Select(x => x with { ScheduleAnchorUtc = anchor, IntervalMinutes = 60, District = "浦东新区" }).Where(x => !query.TryGetValue("deviceId", out var device) || x.DeviceId == device).ToArray();
                 return Task.FromResult(Json(new ReportPage(checks, null, "fixture", _now, true)));
             }
-            if (Guid.TryParse(path.Split('/').Last(), out var id)) return Task.FromResult(Json(new CloudCaptureDetail(Records.First(x => x.Id == id), null, null)));
+            if (Guid.TryParse(path.Split('/').Last(), out var id))
+                return Task.FromResult(Json(new CloudCaptureDetail(id == RemoteCapture.Id ? RemoteCapture : Records.First(x => x.Id == id), id == RemoteCapture.Id ? "http://fixture.invalid/remote.jpg" : null, null)));
             return Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound));
         }
         public static HttpResponseMessage Json<T>(T value) => new(HttpStatusCode.OK) { Content = JsonContent.Create(value, options: new JsonSerializerOptions(JsonSerializerDefaults.Web) { Converters = { new JsonStringEnumConverter() } }) };

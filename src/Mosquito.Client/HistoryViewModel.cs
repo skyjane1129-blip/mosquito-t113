@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using System.IO;
+using System.Net.Http;
 using Microsoft.Win32;
 using Mosquito.Client.Core;
 
@@ -27,7 +28,51 @@ public sealed class HistoryViewModel : ObservableModel
         PreviousCommand = new(() => Move(-1), () => Allowed && !Busy && _session.Page > 0);
         NextCommand = new(() => Move(1), () => Allowed && !Busy && _session.Page + 1 < _session.PageCount);
         ExportCommand = new(ExportAsync, () => Allowed && !Busy && _session.Loaded && _session.Result.IsComplete && _session.Result.Items.Count > 0);
+        ExportPhotosCommand = new(ExportPhotosAsync, () => Allowed && !Busy && _selection.Count > 0);
+        CancelExportCommand = new(() => { _exporting?.Cancel(); return Task.CompletedTask; }, () => _exporting is not null);
         access.Changed += Reset;
+    }
+    private static readonly HttpClient Downloads = new() { Timeout = TimeSpan.FromSeconds(120) };
+    private List<CloudCaptureRecord> _selection = [];
+    private CancellationTokenSource? _exporting;
+    public AsyncRelayCommand ExportPhotosCommand { get; }
+    public AsyncRelayCommand CancelExportCommand { get; }
+    public int SelectionCount => _selection.Count;
+    public string SelectionLabel => _selection.Count == 0 ? "未选中记录（按住 Ctrl 或 Shift 可多选）" : $"已选中 {_selection.Count} 条";
+    public bool IsExporting => _exporting is not null;
+    // The DataGrid's multi-selection is pushed in from the view; SelectedItem still drives the photo pane.
+    public void SetSelection(IEnumerable<CloudCaptureRecord> rows)
+    {
+        _selection = rows.Where(r => r is not null).DistinctBy(r => r.Id).ToList();
+        Raise(nameof(SelectionCount)); Raise(nameof(SelectionLabel)); ExportPhotosCommand.RaiseCanExecuteChanged();
+    }
+    // "导出选中照片": originals (+ annotated pictures when analysed) named <device>_<time>.jpg into one folder, plus a CSV.
+    private async Task ExportPhotosAsync()
+    {
+        if (!Allowed || _selection.Count == 0) return;
+        var generation = _access.Generation;
+        var records = _selection.ToArray();
+        var dialog = new OpenFolderDialog { Title = $"选择导出文件夹（{records.Length} 条记录的照片）", Multiselect = false };
+        if (dialog.ShowDialog() != true || !Current(generation)) return;
+        var folder = Path.Combine(dialog.FolderName, $"蚊虫照片_{BeijingTime.Today:yyyyMMdd}_{records.Length}张");
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(_access.Token);
+        _exporting = cts; Busy = true; CancelExportCommand.RaiseCanExecuteChanged(); Raise(nameof(IsExporting));
+        try
+        {
+            Func<Guid, CancellationToken, Task<CloudCaptureDetail>>? detail = _cloud.IsAuthenticated ? _cloud.GetCaptureAsync : null;
+            var result = await PhotoExporter.ExportAsync(records, folder, detail, (url, token) => Downloads.GetByteArrayAsync(url, token),
+                new Progress<PhotoExportProgress>(p => { if (Current(generation)) Message = $"正在导出 {p.Done}/{p.Total}：{p.Current}"; }), cts.Token);
+            if (!Current(generation)) return;
+            Message = $"{result.Summary} 文件夹：{result.Folder}";
+        }
+        catch (OperationCanceledException) { if (Current(generation)) Message = $"导出已取消，已下载的文件保留在 {folder}"; }
+        catch (Exception ex) { if (Current(generation)) Message = $"导出失败：{ex.Message}"; }
+        finally
+        {
+            if (ReferenceEquals(_exporting, cts)) _exporting = null;
+            CancelExportCommand.RaiseCanExecuteChanged(); Raise(nameof(IsExporting));
+            if (_access.Generation == generation) Busy = false;
+        }
     }
     public PhotoViewModel Photo { get; }
     public ObservableCollection<CloudCaptureRecord> Rows { get; } = [];
@@ -179,7 +224,8 @@ public sealed class HistoryViewModel : ObservableModel
     }
     private void Reset()
     {
-        _session = new(); Selected = null; Rows.Clear(); Photo.Clear();
+        _exporting?.Cancel();
+        _session = new(); Selected = null; Rows.Clear(); Photo.Clear(); SetSelection([]);
         Device = ""; Status = "全部"; Range = "今天";
         _from = _to = BeijingTime.Today; Raise(nameof(From)); Raise(nameof(To));
         Busy = false; _polling = false;
@@ -189,5 +235,6 @@ public sealed class HistoryViewModel : ObservableModel
     private void Commands()
     {
         QueryCommand.RaiseCanExecuteChanged(); RefreshCommand.RaiseCanExecuteChanged(); PreviousCommand.RaiseCanExecuteChanged(); NextCommand.RaiseCanExecuteChanged(); ExportCommand.RaiseCanExecuteChanged();
+        ExportPhotosCommand.RaiseCanExecuteChanged(); CancelExportCommand.RaiseCanExecuteChanged();
     }
 }

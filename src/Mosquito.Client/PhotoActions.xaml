@@ -1,6 +1,8 @@
 <UserControl x:Class="Mosquito.Client.PhotoActions" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
- <StackPanel Orientation="Horizontal">
+ <WrapPanel Orientation="Horizontal">
   <Button Content="放大 / 原图" Click="OpenPhoto" IsEnabled="{Binding HasImage}" Style="{StaticResource SecondaryButton}" Padding="12,7" Margin="0,0,8,0"/>
-  <Button Content="保存照片" Click="SavePhoto" IsEnabled="{Binding HasImage}" Style="{StaticResource SecondaryButton}" Padding="12,7"/>
- </StackPanel>
+  <Button Content="保存照片" Click="SavePhoto" IsEnabled="{Binding HasImage}" Style="{StaticResource SecondaryButton}" Padding="12,7" Margin="0,0,8,0"/>
+  <Button x:Name="AnalyzeButton" Content="{Binding AnalyzeButtonText}" Click="Analyze" IsEnabled="{Binding CanAnalyze}" Style="{StaticResource SecondaryButton}" Padding="12,7" Margin="0,0,8,0" ToolTip="把这张照片交给服务端的蚊卵检测模型，返回标出蚊卵和蚊子的标注图（需云端登录，约 10 到 60 秒）"/>
+  <Button Content="{Binding ToggleText}" Click="ToggleAnnotated" IsEnabled="{Binding HasAnalysis}" Style="{StaticResource SecondaryButton}" Padding="12,7"/>
+ </WrapPanel>
 </UserControl>

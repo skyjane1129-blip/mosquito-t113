@@ -21,8 +21,9 @@
             <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="12"/><ColumnDefinition Width="380"/></Grid.ColumnDefinitions>
             <Border Style="{StaticResource Card}" Padding="12">
                 <Grid><Grid.RowDefinitions><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
-                    <DataGrid ItemsSource="{Binding Rows}" SelectedItem="{Binding Selected}" AutoGenerateColumns="False" IsReadOnly="True" SelectionMode="Single">
+                    <DataGrid x:Name="RecordsGrid" ItemsSource="{Binding Rows}" SelectedItem="{Binding Selected}" AutoGenerateColumns="False" IsReadOnly="True" SelectionMode="Extended" SelectionChanged="RecordsSelectionChanged">
                         <DataGrid.Columns>
+                            <DataGridTextColumn Header="照片名称" Binding="{Binding PhotoName}" Width="235"/>
                             <DataGridTextColumn Header="采集时间" Binding="{Binding CapturedDisplay}" Width="155"/>
                             <DataGridTextColumn Header="设备编号" Binding="{Binding DeviceDisplay}" Width="*" MinWidth="110"/>
                             <DataGridTextColumn Header="温度" Binding="{Binding Environment.TemperatureDisplay, TargetNullValue=未提供}" Width="85"/>
@@ -34,7 +35,12 @@
                     <TextBlock Text="当前条件下暂无采集记录" Visibility="{Binding IsEmpty, Converter={StaticResource BooleanToVisibilityConverter}}" HorizontalAlignment="Center" VerticalAlignment="Center" Foreground="{StaticResource MutedBrush}" IsHitTestVisible="False"/>
                     <DockPanel Grid.Row="1" Margin="0,12,0,0">
                         <StackPanel DockPanel.Dock="Right" Orientation="Horizontal"><Button Content="上一页" Command="{Binding PreviousCommand}" Style="{StaticResource SecondaryButton}" Padding="12,7" Margin="0,0,8,0"/><Button Content="下一页" Command="{Binding NextCommand}" Style="{StaticResource SecondaryButton}" Padding="12,7"/></StackPanel>
-                        <TextBlock Text="{Binding PageLabel}" VerticalAlignment="Center" Foreground="{StaticResource MutedBrush}" FontSize="12"/>
+                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                            <TextBlock Text="{Binding PageLabel}" VerticalAlignment="Center" Foreground="{StaticResource MutedBrush}" FontSize="12"/>
+                            <TextBlock Text="{Binding SelectionLabel}" VerticalAlignment="Center" Foreground="{StaticResource MutedBrush}" FontSize="12" Margin="16,0,8,0"/>
+                            <Button x:Name="ExportPhotosButton" Content="导出选中照片" Command="{Binding ExportPhotosCommand}" Style="{StaticResource SecondaryButton}" Padding="12,7" ToolTip="把选中记录的原图（已识别的再加标注图）按“设备编号_采集时间.jpg”存到一个文件夹，并附 CSV"/>
+                            <Button Content="取消导出" Command="{Binding CancelExportCommand}" Visibility="{Binding IsExporting, Converter={StaticResource BooleanToVisibilityConverter}}" Style="{StaticResource SecondaryButton}" Padding="12,7" Margin="8,0,0,0"/>
+                        </StackPanel>
                     </DockPanel>
                 </Grid>
             </Border>

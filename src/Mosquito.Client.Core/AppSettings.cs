@@ -14,6 +14,22 @@ public sealed class AppSettings
     public string LocalDataRoot { get; set; } = string.Empty;
     public int CommandTimeoutSeconds { get; set; } = 180;
     public int DefaultFocus { get; set; } = 500;
+    // Remote-mode map base tiles. "amap" needs no key but is an unofficial raster endpoint (demo only);
+    // "osm" is WGS84 and needs attribution; "none" draws boundaries only; "custom" uses MapTileUrlTemplate.
+    public string MapTileProvider { get; set; } = "amap";
+    public string? MapTileUrlTemplate { get; set; }
+    public string MapTileCoordinateSystem { get; set; } = "GCJ02";
+    public string MapTileCacheDirectory { get; set; } = string.Empty;
+    public int MapMinZoom { get; set; } = 10;
+    public int MapMaxZoom { get; set; } = 18;
+
+    public Geo.MapSettings ToMapSettings() => new(
+        string.IsNullOrWhiteSpace(MapTileProvider) ? "none" : MapTileProvider.Trim().ToLowerInvariant(),
+        string.IsNullOrWhiteSpace(MapTileUrlTemplate) ? null : MapTileUrlTemplate,
+        string.IsNullOrWhiteSpace(MapTileCoordinateSystem) ? "GCJ02" : MapTileCoordinateSystem.Trim().ToUpperInvariant(),
+        string.IsNullOrWhiteSpace(MapTileCacheDirectory) ? Path.Combine(LocalDataRoot, "tiles") : MapTileCacheDirectory,
+        Math.Clamp(MapMinZoom, 1, 19),
+        Math.Clamp(Math.Max(MapMaxZoom, MapMinZoom), 1, 19));
 
     public static AppSettings Load(string path)
     {
@@ -39,6 +55,13 @@ public sealed class AppSettings
             settings.LocalDataRoot = Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
                 "MosquitoCapture");
+        }
+        // The installer ships its own ADB under the application directory and writes a relative
+        // AdbPath ("platform-tools\adb.exe"); resolve it against the settings file location so the
+        // client never depends on a machine-wide ADB install or PATH.
+        if (!string.IsNullOrWhiteSpace(settings.AdbPath) && !Path.IsPathRooted(settings.AdbPath))
+        {
+            settings.AdbPath = Path.GetFullPath(Path.Combine(Path.GetDirectoryName(Path.GetFullPath(path))!, settings.AdbPath));
         }
         return settings;
     }

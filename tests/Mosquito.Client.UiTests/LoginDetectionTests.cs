@@ -15,7 +15,7 @@ internal static class LoginDetectionTests
     public static async Task RunAsync(string output, string photoPath)
     {
         await DetectionScenarios();
-        var settings = new AppSettings { ApiBaseUrl = "http://auth-fixture.invalid", LocalDataRoot = Path.Combine(output, "auth-data"), DeviceId = "MQ-TEST-001" };
+        var settings = new AppSettings { ApiBaseUrl = "http://auth-fixture.invalid", LocalDataRoot = Path.Combine(output, "auth-data"), DeviceId = "MQ-TEST-001", MapTileProvider = "none" };
         var handler = new AuthHandler(); var cloud = new CloudApiClient(settings, handler);
         var outbox = new OutboxRepository(settings.LocalDataRoot); await outbox.InitializeAsync(default);
         var board = new ProbeAdb(); var detector = new CountingDetector();

@@ -90,6 +90,15 @@ try
     var baseOnlySettings = AppSettings.Load(baseSettingsPath);
     Assert(baseOnlySettings.DeviceId is null && baseOnlySettings.ApiBaseUrl == "https://base.invalid",
         "missing optional local settings leave the base configuration unchanged");
+    // The installer writes an app-relative ADB path; it must resolve next to the settings file.
+    await File.WriteAllTextAsync(localSettingsPath, """{ "adbPath": "platform-tools\\adb.exe" }""");
+    var relativeAdb = AppSettings.Load(baseSettingsPath);
+    Assert(relativeAdb.AdbPath == Path.Combine(temporaryRoot, "platform-tools", "adb.exe"),
+        "relative AdbPath resolves against the settings directory (bundled ADB)");
+    await File.WriteAllTextAsync(localSettingsPath, """{ "adbPath": "C:\\embedded\\android-platform-tools\\adb.exe" }""");
+    Assert(AppSettings.Load(baseSettingsPath).AdbPath == @"C:\embedded\android-platform-tools\adb.exe",
+        "absolute AdbPath is left unchanged");
+    File.Delete(localSettingsPath);
 
     var photoPath = Path.Combine(temporaryRoot, "photo.jpg");
     var metadataPath = Path.Combine(temporaryRoot, "metadata.txt");
@@ -132,7 +141,16 @@ try
     var csv = await File.ReadAllTextAsync(csvPath);
     Assert(csv.Contains("30.16", StringComparison.Ordinal), "CSV temperature");
     Assert(csv.Contains("4.124", StringComparison.Ordinal), "CSV battery voltage");
+    // Photo naming: <device id or serial>_<Beijing capture time>.jpg, e.g. MQ-SH-001_20260916_111850.jpg
+    var named = new CloudCaptureRecord(id, "MOSQUITO-T113-DEV", "Complete", "BOARD_4G",
+        new DateTimeOffset(2026, 9, 16, 3, 18, 50, TimeSpan.Zero), true, 1, 1, null, null, null) { DeviceId = "MQ-SH-001" };
+    Assert(named.PhotoName == "MQ-SH-001_20260916_111850.jpg", $"photo name uses device id and Beijing time ({named.PhotoName})");
+    Assert(named.AnnotatedPhotoName == "MQ-SH-001_20260916_111850_蚊卵标注.jpg", "annotated photo name adds a suffix");
+    Assert((named with { DeviceId = null }).PhotoName == "MOSQUITO-T113-DEV_20260916_111850.jpg", "photo name falls back to the ADB serial");
+    Assert(csv.TrimStart('﻿').StartsWith("照片名称,", StringComparison.Ordinal) && csv.Contains("MOSQUITO-T113-DEV_", StringComparison.Ordinal), "CSV leads with the photo name");
     await HistoryTests.RunAsync(Assert, temporaryRoot, outbox, artifact);
+    await PhotoExportTests.RunAsync(Assert, temporaryRoot);
+    MapTests.Run(Assert);
 }
 finally
 {
@@ -146,6 +164,8 @@ Console.WriteLine("PASS: real sensor units without fake battery percentage");
 Console.WriteLine("PASS: optional appsettings.Local.json property overrides");
 Console.WriteLine("PASS: SQLite retry outbox state transitions");
 Console.WriteLine("PASS: UTF-8 CSV export");
+Console.WriteLine("PASS: batch photo export (naming, annotated pictures, per-record failures, cancel)");
+Console.WriteLine("PASS: Shanghai district atlas, Web Mercator and GCJ02 conversion");
 }
 catch (Exception exception)
 {
